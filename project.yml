@@ -1,0 +1,33 @@
+name: Somnya
+options:
+  bundleIdPrefix: com.aurende
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: 35DGVFM7WB
+    MARKETING_VERSION: "0.4"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: YES
+
+targets:
+  Somnya:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aurende.somnya
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        # Mic usage string kept ready, but the `audio` background mode is intentionally
+        # NOT declared yet: on a free (7-day) account it can prevent the app from launching
+        # if the provisioning profile doesn't carry the entitlement. It will be re-added
+        # when the mic keepalive layer lands and we confirm it provisions on-device.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Somnya listens for breathing and ambient quiet to track your sleep. Audio is processed on-device."
+        TARGETED_DEVICE_FAMILY: "1"
