@@ -29,6 +29,7 @@ struct SomnyaApp: App {
             if let modelContainer {
                 RootView()
                     .modelContainer(modelContainer)
+                    .environmentObject(SessionManager(context: modelContainer.mainContext))
             } else {
                 StartupErrorView(message: startupError ?? "Unknown startup error.")
             }
