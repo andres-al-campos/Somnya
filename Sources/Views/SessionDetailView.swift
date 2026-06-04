@@ -17,6 +17,16 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
 
+                NavigationLink {
+                    RawDataView(session: session)
+                } label: {
+                    Label("Raw Data (\(windows.count) windows)", systemImage: "tablecells")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .tint(.white)
+
                 if windows.isEmpty {
                     emptyState
                 } else {

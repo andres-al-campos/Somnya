@@ -98,6 +98,9 @@ final class AudioAnalyzer {
         let breathingRate: Double?
         let breathingRateVariability: Double?
         let confidence: Double
+        /// Diagnostics: how many envelope samples this window had, and (when nil) why.
+        let envelopeSampleCount: Int
+        let reason: String
     }
 
     /// Snapshot the current window's audio features and clear the envelope for the next window.
@@ -125,7 +128,9 @@ final class AudioAnalyzer {
                 audioFloor: noiseFloor,
                 breathingRate: result.bpm,
                 breathingRateVariability: variability,
-                confidence: result.confidence
+                confidence: result.confidence,
+                envelopeSampleCount: env.count,
+                reason: result.reason
             )
         }
     }
@@ -149,6 +154,8 @@ final class AudioAnalyzer {
         let bpm: Double?
         /// Normalized autocorrelation peak height [0...1] — how clear the rhythm was.
         let confidence: Double
+        /// Why this came out the way it did — for tuning/diagnostics. "ok" on success.
+        let reason: String
     }
 
     /// Estimate breathing rate from a loudness envelope via autocorrelation.
@@ -162,7 +169,8 @@ final class AudioAnalyzer {
         // Need at least ~2 full cycles of the slowest breath to estimate reliably.
         let minSamplesNeeded = Int((60.0 / SomnyaConfig.breathingMinBPM) * envelopeHz * 2)
         guard n >= minSamplesNeeded, n > 4 else {
-            return BreathingEstimate(bpm: nil, confidence: 0)
+            return BreathingEstimate(bpm: nil, confidence: 0,
+                reason: "too few envelope samples (\(n) < \(minSamplesNeeded) — window too short)")
         }
 
         // Detrend: subtract the mean so the DC component doesn't dominate the autocorrelation.
@@ -172,14 +180,16 @@ final class AudioAnalyzer {
         // Zero-lag energy (the normalizer). If essentially flat, there's no signal.
         let energy = x.map { $0 * $0 }.reduce(0, +)
         guard energy > 1e-12 else {
-            return BreathingEstimate(bpm: nil, confidence: 0)
+            return BreathingEstimate(bpm: nil, confidence: 0,
+                reason: "envelope flat (no variation — likely silence or mic not capturing)")
         }
 
         // Lag bounds from the breathing band. Faster breaths = shorter lag.
         let minLag = Int((60.0 / SomnyaConfig.breathingMaxBPM) * envelopeHz)
         let maxLag = min(n - 1, Int((60.0 / SomnyaConfig.breathingMinBPM) * envelopeHz))
         guard maxLag > minLag, minLag >= 1 else {
-            return BreathingEstimate(bpm: nil, confidence: 0)
+            return BreathingEstimate(bpm: nil, confidence: 0,
+                reason: "lag band invalid (envelope too short for breathing band)")
         }
 
         // Find the strongest normalized autocorrelation peak within the band.
@@ -198,12 +208,14 @@ final class AudioAnalyzer {
         }
 
         guard bestLag > 0, bestCorr >= SomnyaConfig.breathingMinConfidence else {
-            return BreathingEstimate(bpm: nil, confidence: max(0, bestCorr))
+            return BreathingEstimate(bpm: nil, confidence: max(0, bestCorr),
+                reason: String(format: "weak rhythm (conf=%.2f < %.2f threshold — noisy or no steady breathing)",
+                               max(0, bestCorr), SomnyaConfig.breathingMinConfidence))
         }
 
         // lag (samples) → period (seconds) → breaths per minute.
         let periodSeconds = Double(bestLag) / envelopeHz
         let bpm = 60.0 / periodSeconds
-        return BreathingEstimate(bpm: bpm, confidence: bestCorr)
+        return BreathingEstimate(bpm: bpm, confidence: bestCorr, reason: "ok")
     }
 }

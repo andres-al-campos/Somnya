@@ -92,7 +92,20 @@ final class WindowAggregator {
         window.session = session
         context.insert(window)
 
-        let breathStr = audio?.breathingRate.map { String(format: "%.1fbrpm conf=%.2f", $0, audio?.confidence ?? 0) } ?? "breath=nil"
+        // Always surface the audio diagnostic — on success the rate+conf, on nil the REASON +
+        // envelope count + rms/floor, so a "no breathing" night is debuggable, not a mystery.
+        let breathStr: String
+        if let a = audio {
+            if let rate = a.breathingRate {
+                breathStr = String(format: "breath=%.1fbrpm conf=%.2f env=%d rms=%.4f floor=%.4f",
+                                   rate, a.confidence, a.envelopeSampleCount, a.audioRMS, a.audioFloor)
+            } else {
+                breathStr = String(format: "breath=nil [%@] env=%d rms=%.4f floor=%.4f",
+                                   a.reason, a.envelopeSampleCount, a.audioRMS, a.audioFloor)
+            }
+        } else {
+            breathStr = "breath=nil [no audio — mic off or no buffers yet]"
+        }
         SomnyaLog.window(String(format: "window n=%d rms=%.3f jerk=%.3f count=%.3f enmo=%.3f immobRun=%d %@%@",
                                 samples.count, features.rms, features.jerkRMS, features.activityCount,
                                 features.enmoMean, immobilityRun, breathStr, partial ? " (partial)" : ""))
