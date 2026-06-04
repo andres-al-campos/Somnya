@@ -15,7 +15,8 @@ enum SensorWindowCSV {
         "accel_rms", "accel_jerk_rms", "accel_activity_count", "accel_enmo_mean",
         "immobility_run_length", "tilt_angle", "posture_change_count",
         "audio_rms", "audio_floor", "breathing_rate_bpm",
-        "breathing_rate_variability", "assigned_stage", "assigned_confidence"
+        "breathing_rate_variability", "breathing_confidence",
+        "assigned_stage", "assigned_confidence"
     ].joined(separator: ",")
 
     /// Build the full CSV text for a session's windows (sorted by time).
@@ -38,6 +39,7 @@ enum SensorWindowCSV {
                 optNum(w.audioFloor),
                 optNum(w.breathingRate),
                 optNum(w.breathingRateVariability),
+                optNum(w.breathingConfidence),
                 w.assignedStageRaw,
                 num(w.assignedConfidence)
             ].joined(separator: ",")
@@ -50,14 +52,55 @@ enum SensorWindowCSV {
     /// session start so multiple exports don't collide.
     static func writeTempFile(for session: SleepSession) throws -> URL {
         let csv = make(from: session.windows)
+        let url = tempURL(for: session, suffix: "")
+        try csv.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// All export files for a session: the feature CSV plus the long-form envelope CSV (when any
+    /// window captured an envelope). Returns only files that exist, so the share sheet offers
+    /// exactly what's available. Letting the analysis tool re-slice window size lives here: the
+    /// envelope is exported long-form (one row per envelope sample) so pandas can regroup it.
+    static func writeAllTempFiles(for session: SleepSession) throws -> [URL] {
+        var urls = [try writeTempFile(for: session)]
+        if let envURL = try writeEnvelopeTempFile(for: session) {
+            urls.append(envURL)
+        }
+        return urls
+    }
+
+    /// Long-form envelope CSV: window_start_iso, sample_index, amplitude. nil if no window has an
+    /// envelope (e.g. mic was off all session).
+    static func writeEnvelopeTempFile(for session: SleepSession) throws -> URL? {
+        let iso = ISO8601DateFormatter()
+        let sorted = session.windows.sorted { $0.startTime < $1.startTime }
+        // raw + filtered side by side so the band-pass before/after is directly comparable.
+        var lines = ["window_start_iso,sample_index,amplitude,filtered_amplitude"]
+        var any = false
+        for w in sorted {
+            guard let env = w.audioEnvelope, !env.isEmpty else { continue }
+            any = true
+            let ts = iso.string(from: w.startTime)
+            let filt = w.audioEnvelopeFiltered ?? []
+            for (i, v) in env.enumerated() {
+                let f = i < filt.count ? num(filt[i]) : ""
+                lines.append("\(ts),\(i),\(num(v)),\(f)")
+            }
+        }
+        guard any else { return nil }
+        let url = tempURL(for: session, suffix: "-envelope")
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Shared temp-file URL builder with a collision-safe, slash/colon-free name.
+    private static func tempURL(for session: SleepSession, suffix: String) -> URL {
         let stamp = session.startTime.formatted(.iso8601
             .year().month().day().dateSeparator(.dash)
             .time(includingFractionalSeconds: false))
             .replacingOccurrences(of: ":", with: "-")
-        let name = "somnya-session-\(stamp).csv"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        try csv.write(to: url, atomically: true, encoding: .utf8)
-        return url
+        let name = "somnya-session-\(stamp)\(suffix).csv"
+        return FileManager.default.temporaryDirectory.appendingPathComponent(name)
     }
 
     // MARK: - Formatting helpers

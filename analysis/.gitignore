@@ -1,0 +1,10 @@
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# Generated analysis output
+plots/
+
+# Exported session data (machine-specific captures, not source)
+somnya-session-*.csv

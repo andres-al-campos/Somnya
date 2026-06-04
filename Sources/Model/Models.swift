@@ -138,6 +138,16 @@ final class SensorWindow {
     var audioFloor: Double?
     var breathingRate: Double?
     var breathingRateVariability: Double?
+    /// Autocorrelation peak height [0...1] for the breathing estimate — exported so the offline
+    /// tool can sweep the confidence threshold and tune it against real nights.
+    var breathingConfidence: Double?
+    /// The raw ~10 Hz loudness envelope for this window (~300 floats). Stored so window size and
+    /// thresholds can be re-experimented OFFLINE from the same capture — record dense once,
+    /// re-slice forever — instead of baking the 30s choice into the device.
+    var audioEnvelope: [Double]?
+    /// The band-passed envelope — what breathing detection runs on. Kept alongside the raw one so
+    /// the before/after effect of the filter is inspectable, not assumed.
+    var audioEnvelopeFiltered: [Double]?
     /// Mel-band energies (~10-20 bins over the breathing band) — future-proofing for a learned model.
     var melBandEnergies: [Double]?
 
@@ -165,6 +175,9 @@ final class SensorWindow {
          audioFloor: Double? = nil,
          breathingRate: Double? = nil,
          breathingRateVariability: Double? = nil,
+         breathingConfidence: Double? = nil,
+         audioEnvelope: [Double]? = nil,
+         audioEnvelopeFiltered: [Double]? = nil,
          melBandEnergies: [Double]? = nil) {
         self.startTime = startTime
         self.windowSeconds = windowSeconds
@@ -179,6 +192,9 @@ final class SensorWindow {
         self.audioFloor = audioFloor
         self.breathingRate = breathingRate
         self.breathingRateVariability = breathingRateVariability
+        self.breathingConfidence = breathingConfidence
+        self.audioEnvelope = audioEnvelope
+        self.audioEnvelopeFiltered = audioEnvelopeFiltered
         self.melBandEnergies = melBandEnergies
         self.assignedStageRaw = SleepStage.unknown.rawValue
         self.assignedConfidence = 0

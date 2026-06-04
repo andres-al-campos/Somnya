@@ -87,7 +87,10 @@ final class WindowAggregator {
             audioRMS: audio?.audioRMS,
             audioFloor: audio?.audioFloor,
             breathingRate: audio?.breathingRate,
-            breathingRateVariability: audio?.breathingRateVariability
+            breathingRateVariability: audio?.breathingRateVariability,
+            breathingConfidence: audio?.confidence,
+            audioEnvelope: audio?.envelope,
+            audioEnvelopeFiltered: audio?.filteredEnvelope
         )
         window.session = session
         context.insert(window)

@@ -25,8 +25,15 @@ final class AudioAnalyzer {
 
     /// Slow loudness envelope (≈ audioEnvelopeHz). This is the breathing signal. Capped so a
     /// long night can't grow it unbounded — we only need the current window's worth plus margin.
+    /// `envelope` is RAW (full-spectrum); `filteredEnvelope` is post band-pass. We keep both so the
+    /// before/after effect of the filter is visible in the export, not taken on faith.
     private var envelope: [Double] = []
+    private var filteredEnvelope: [Double] = []
     private let envelopeCapacity: Int
+
+    /// Band-pass applied per audio sample before the filtered envelope is built. Lazily created on
+    /// first buffer once we know the real hardware sample rate.
+    private var bandPass: BandPassFilter?
 
     /// Accumulator for downsampling buffer-rate RMS → envelope-rate samples.
     private var sampleClock: Double = 0
@@ -51,7 +58,7 @@ final class AudioAnalyzer {
         guard n > 0 else { return }
         hardwareSampleRate = buffer.format.sampleRate
 
-        // RMS of this buffer = instantaneous loudness.
+        // Raw buffer RMS = full-spectrum loudness (cheap, no filter state).
         var sumSq: Double = 0
         for i in 0..<n {
             let v = Double(channel[i])
@@ -59,8 +66,24 @@ final class AudioAnalyzer {
         }
         let rms = sqrt(sumSq / Double(n))
 
+        // Copy samples out so the filtered RMS can be computed inside the sync block (the filter is
+        // stateful and shared with reset(); keep all its mutation on the analyzer queue).
+        let samples = (0..<n).map { Double(channel[$0]) }
+
         queue.sync {
             lastRMS = rms
+
+            // Lazily build the band-pass once we know the real hardware rate.
+            if bandPass == nil {
+                bandPass = BandPassFilter(sampleRate: hardwareSampleRate)
+            }
+            // Band-passed RMS for the SAME buffer — directly comparable to the raw RMS.
+            var sumSqFiltered: Double = 0
+            for v in samples {
+                let f = bandPass?.process(v) ?? v
+                sumSqFiltered += f * f
+            }
+            let rmsFiltered = sqrt(sumSqFiltered / Double(max(1, samples.count)))
 
             // Rolling noise floor: track the quiet baseline. Seed on first buffer, then only
             // let it drift toward quieter values quickly and louder values slowly, so speech /
@@ -74,16 +97,20 @@ final class AudioAnalyzer {
                 noiseFloor += SomnyaConfig.noiseFloorSmoothing * (rms - noiseFloor)
             }
 
-            // Downsample buffer-rate RMS into the ~10 Hz envelope. One buffer covers
-            // n/sampleRate seconds; emit floor(that * envelopeHz) envelope samples.
+            // Downsample buffer-rate RMS into the ~10 Hz envelope (raw + filtered in lockstep).
+            // One buffer covers n/sampleRate seconds; emit floor(that * envelopeHz) samples.
             let bufferSeconds = Double(n) / hardwareSampleRate
             sampleClock += bufferSeconds * SomnyaConfig.audioEnvelopeHz
             while sampleClock >= 1 {
                 envelope.append(rms)
+                filteredEnvelope.append(rmsFiltered)
                 sampleClock -= 1
             }
             if envelope.count > envelopeCapacity {
                 envelope.removeFirst(envelope.count - envelopeCapacity)
+            }
+            if filteredEnvelope.count > envelopeCapacity {
+                filteredEnvelope.removeFirst(filteredEnvelope.count - envelopeCapacity)
             }
         }
     }
@@ -98,6 +125,11 @@ final class AudioAnalyzer {
         let breathingRate: Double?
         let breathingRateVariability: Double?
         let confidence: Double
+        /// The RAW (full-spectrum) envelope for this window — persisted alongside the filtered one
+        /// so the before/after effect of the band-pass is visible offline, not taken on faith.
+        let envelope: [Double]
+        /// The band-passed envelope — what breathing detection actually runs on.
+        let filteredEnvelope: [Double]
         /// Diagnostics: how many envelope samples this window had, and (when nil) why.
         let envelopeSampleCount: Int
         let reason: String
@@ -109,10 +141,14 @@ final class AudioAnalyzer {
         queue.sync {
             guard floorInitialized else { return nil }
             let env = envelope
+            let filtered = filteredEnvelope
             envelope.removeAll(keepingCapacity: true)
+            filteredEnvelope.removeAll(keepingCapacity: true)
 
+            // Detect breathing on the FILTERED envelope (noise rejected); the raw one is kept only
+            // for offline before/after comparison.
             let result = Self.estimateBreathing(
-                envelope: env,
+                envelope: filtered,
                 envelopeHz: SomnyaConfig.audioEnvelopeHz
             )
 
@@ -129,7 +165,9 @@ final class AudioAnalyzer {
                 breathingRate: result.bpm,
                 breathingRateVariability: variability,
                 confidence: result.confidence,
-                envelopeSampleCount: env.count,
+                envelope: env,
+                filteredEnvelope: filtered,
+                envelopeSampleCount: filtered.count,
                 reason: result.reason
             )
         }
@@ -142,6 +180,8 @@ final class AudioAnalyzer {
             noiseFloor = 0
             floorInitialized = false
             envelope.removeAll(keepingCapacity: true)
+            filteredEnvelope.removeAll(keepingCapacity: true)
+            bandPass?.reset()
             sampleClock = 0
             lastBreathingRate = nil
         }

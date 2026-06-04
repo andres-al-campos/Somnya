@@ -8,9 +8,16 @@ import SwiftData
 struct RawDataView: View {
     let session: SleepSession
 
-    @State private var exportURL: URL?
-    @State private var showShare = false
+    @State private var exportItem: ExportFile?
     @State private var exportError: String?
+
+    /// Wrapper so `sheet(item:)` can drive presentation off the payload itself — this avoids the
+    /// empty-panel race where `isPresented=true` fires before state is committed. Carries the
+    /// feature CSV plus (when present) the envelope CSV, both handed to the share sheet at once.
+    private struct ExportFile: Identifiable {
+        let id = UUID()
+        let urls: [URL]
+    }
 
     private var windows: [SensorWindow] {
         session.windows.sorted { $0.startTime < $1.startTime }
@@ -76,10 +83,8 @@ struct RawDataView: View {
                 .disabled(windows.isEmpty)
             }
         }
-        .sheet(isPresented: $showShare) {
-            if let url = exportURL {
-                ShareSheet(items: [url])
-            }
+        .sheet(item: $exportItem) { item in
+            ShareSheet(items: item.urls)
         }
         .alert("Export failed", isPresented: .constant(exportError != nil)) {
             Button("OK") { exportError = nil }
@@ -90,8 +95,8 @@ struct RawDataView: View {
 
     private func exportCSV() {
         do {
-            exportURL = try SensorWindowCSV.writeTempFile(for: session)
-            showShare = true
+            let urls = try SensorWindowCSV.writeAllTempFiles(for: session)
+            exportItem = ExportFile(urls: urls)
         } catch {
             // What went wrong + how to recover.
             exportError = "Couldn't write the CSV file: \(error.localizedDescription). Free up storage and try again, or restart the app."

@@ -43,4 +43,10 @@ enum SomnyaConfig {
     /// Exponential-smoothing factor for the rolling noise floor (per audio buffer). Small =
     /// slow to adapt (tracks the quiet baseline, ignores transient sounds).
     static let noiseFloorSmoothing: Double = 0.02
+
+    /// Band-pass edges (Hz) applied to audio BEFORE building the envelope. Breathing airflow noise
+    /// is low-frequency; birds/hiss/sibilance are high. Isolating this band rejects that noise —
+    /// gain can't (it scales noise too). PLACEHOLDER edges — tune against real before/after data.
+    static let breathingBandLowHz: Double = 50
+    static let breathingBandHighHz: Double = 1000
 }

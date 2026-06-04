@@ -34,9 +34,12 @@ final class AudioKeepalive {
 
         let session = AVAudioSession.sharedInstance()
         do {
-            // .record with .mixWithOthers so we don't rudely stop the user's other audio,
-            // and we don't need playback. Background audio entitlement keeps this alive locked.
-            try session.setCategory(.record, mode: .measurement, options: [.mixWithOthers])
+            // .record with .mixWithOthers so we don't rudely stop the user's other audio.
+            // Mode .default (NOT .measurement): .measurement disables the system's input gain
+            // and processing for calibrated capture — which buries a faint signal like breathing
+            // in the noise floor. .default re-enables gain/AGC so quiet breathing has a chance of
+            // rising above the floor at a realistic phone-on-nightstand distance.
+            try session.setCategory(.record, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
         } catch {
             SomnyaLog.capture("Audio session activation FAILED: \(error.localizedDescription). Tracking may stop when the screen locks. Check microphone permission in Settings → Somnya.")
