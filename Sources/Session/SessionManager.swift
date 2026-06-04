@@ -15,6 +15,7 @@ final class SessionManager: ObservableObject {
 
     private let context: ModelContext
     private let motion = MotionCapture()
+    private let audio = AudioKeepalive()
     private var aggregator: WindowAggregator?
 
     init(context: ModelContext) {
@@ -30,10 +31,11 @@ final class SessionManager: ObservableObject {
 
     /// (Re)run the start-up guardrails against the CURRENT real state of motion + mic.
     /// Safe to call multiple times — e.g. again once the first motion sample arrives.
+    /// Mic guardrail reflects the live audio session (the keepalive), not just the permission.
     func refreshGuardrails() {
         lastGuardrailResults = Guardrails.runSessionStartChecks(
             motionActive: motion.isActive && motion.hasDeliveredSample,
-            micActive: micGranted
+            micActive: micGranted && audio.isActive
         )
     }
 
@@ -64,6 +66,10 @@ final class SessionManager: ObservableObject {
 
         // Wire up capture: aggregator persists windows; motion feeds it decimated samples.
         let agg = WindowAggregator(context: context, session: session)
+        // At each 30s flush, pull breathing features from the audio analyzer (nil if mic off).
+        agg.audioFeatureProvider = { [weak self] in
+            self?.audio.analyzer.snapshotWindow()
+        }
         aggregator = agg
         motion.onSample = { [weak self] sample in
             // MotionCapture delivers off the main thread; hop back for SwiftData + UI.
@@ -75,6 +81,15 @@ final class SessionManager: ObservableObject {
                 if after != before { self.windowCount = after }
             }
         }
+        // Start the audio keepalive so the app survives the screen locking. Only attempt it
+        // if mic permission is granted; otherwise log honestly and proceed motion-only
+        // (foreground tracking still works, it just won't survive a lock).
+        if micGranted {
+            audio.start()
+        } else {
+            SomnyaLog.capture("Mic not granted — skipping audio keepalive. Tracking will stop when the screen locks. Grant mic in Settings → Somnya for overnight tracking.")
+        }
+
         // Re-check guardrails the moment real motion data flows in (avoids the start-time
         // race where isDeviceMotionActive hasn't flipped yet).
         motion.onFirstSample = { [weak self] in
@@ -97,6 +112,7 @@ final class SessionManager: ObservableObject {
         // Stop capture first so the last partial window is flushed before we finalize.
         motion.stop()
         motion.onSample = nil
+        audio.stop()
         aggregator?.finalize()
         aggregator = nil
 

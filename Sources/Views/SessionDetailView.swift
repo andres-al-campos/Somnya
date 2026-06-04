@@ -21,6 +21,7 @@ struct SessionDetailView: View {
                     emptyState
                 } else {
                     movementChart
+                    breathingCard
                     featureSummary
                 }
             }
@@ -63,6 +64,50 @@ struct SessionDetailView: View {
             }
             .frame(height: 160)
         }
+        .padding()
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Windows that have a trustworthy breathing estimate (nil ones are gaps — too quiet/noisy).
+    private var breathingWindows: [SensorWindow] {
+        windows.filter { $0.breathingRate != nil }
+    }
+
+    @ViewBuilder
+    private var breathingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Breathing rate over time")
+                .font(.headline)
+            if breathingWindows.isEmpty {
+                Text("No trustworthy breathing estimate this session. The mic may have been off, the room too quiet, or background noise masked the rhythm. Grant mic access and place the phone near you on the mattress.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Estimated breaths per minute per 30s window (from the mic loudness envelope). Gaps = windows with no clear rhythm.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Chart(breathingWindows) { w in
+                    LineMark(
+                        x: .value("Time", w.startTime),
+                        y: .value("Breaths/min", w.breathingRate ?? 0)
+                    )
+                    .foregroundStyle(.teal)
+                    PointMark(
+                        x: .value("Time", w.startTime),
+                        y: .value("Breaths/min", w.breathingRate ?? 0)
+                    )
+                    .foregroundStyle(.teal.opacity(0.5))
+                    .symbolSize(8)
+                }
+                .frame(height: 160)
+
+                let rates = breathingWindows.compactMap(\.breathingRate)
+                let avg = rates.reduce(0, +) / Double(rates.count)
+                stat("Avg breathing rate", String(format: "%.1f brpm", avg))
+                stat("Windows with breathing", "\(breathingWindows.count) / \(windows.count)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
     }

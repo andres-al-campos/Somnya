@@ -12,7 +12,6 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
-    GENERATE_INFOPLIST_FILE: YES
 
 targets:
   Somnya:
@@ -23,11 +22,18 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aurende.somnya
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        # Mic usage string kept ready, but the `audio` background mode is intentionally
-        # NOT declared yet: on a free (7-day) account it can prevent the app from launching
-        # if the provisioning profile doesn't carry the entitlement. It will be re-added
-        # when the mic keepalive layer lands and we confirm it provisions on-device.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Somnya listens for breathing and ambient quiet to track your sleep. Audio is processed on-device."
         TARGETED_DEVICE_FAMILY: "1"
+    # Info.plist lives at the repo root (NOT inside Sources/) so it isn't double-handled as
+    # both the plist and a bundled resource — that collision corrupted the built plist down
+    # to just the UIBackgroundModes array. The `audio` mode lets the mic keepalive persist
+    # with the screen locked (overnight tracking). If launch breaks on the free account,
+    # confirm the profile carries background-audio or re-sign cleanly via ReSign.
+    info:
+      path: Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        NSMicrophoneUsageDescription: "Somnya listens for breathing and ambient quiet to track your sleep. Audio is processed on-device."
+        UIBackgroundModes:
+          - audio

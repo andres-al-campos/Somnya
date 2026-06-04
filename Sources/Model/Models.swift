@@ -160,7 +160,12 @@ final class SensorWindow {
          accelENMOMean: Double,
          immobilityRunLength: Int,
          tiltAngle: Double,
-         postureChangeCount: Int) {
+         postureChangeCount: Int,
+         audioRMS: Double? = nil,
+         audioFloor: Double? = nil,
+         breathingRate: Double? = nil,
+         breathingRateVariability: Double? = nil,
+         melBandEnergies: [Double]? = nil) {
         self.startTime = startTime
         self.windowSeconds = windowSeconds
         self.accelRMS = accelRMS
@@ -170,11 +175,11 @@ final class SensorWindow {
         self.immobilityRunLength = immobilityRunLength
         self.tiltAngle = tiltAngle
         self.postureChangeCount = postureChangeCount
-        self.audioRMS = nil
-        self.audioFloor = nil
-        self.breathingRate = nil
-        self.breathingRateVariability = nil
-        self.melBandEnergies = nil
+        self.audioRMS = audioRMS
+        self.audioFloor = audioFloor
+        self.breathingRate = breathingRate
+        self.breathingRateVariability = breathingRateVariability
+        self.melBandEnergies = melBandEnergies
         self.assignedStageRaw = SleepStage.unknown.rawValue
         self.assignedConfidence = 0
     }

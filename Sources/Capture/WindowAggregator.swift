@@ -22,6 +22,11 @@ final class WindowAggregator {
     /// Previous window's mean tilt, to count posture changes.
     private var lastTilt: Double?
 
+    /// Pulled at each flush to attach audio features (breathing) to the window. Returns nil when
+    /// the mic is off or has no trustworthy data — the accel-only window is still written.
+    /// Kept as a closure so the aggregator stays decoupled from the audio layer.
+    var audioFeatureProvider: (() -> AudioAnalyzer.WindowFeatures?)?
+
     init(context: ModelContext, session: SleepSession) {
         self.context = context
         self.session = session
@@ -66,6 +71,9 @@ final class WindowAggregator {
         }
         lastTilt = features.meanTilt
 
+        // Pull audio features for this window (nil if mic off / no clear signal).
+        let audio = audioFeatureProvider?()
+
         let window = SensorWindow(
             startTime: start,
             windowSeconds: partial ? Date().timeIntervalSince(start) : windowSeconds,
@@ -75,14 +83,19 @@ final class WindowAggregator {
             accelENMOMean: features.enmoMean,
             immobilityRunLength: immobilityRun,
             tiltAngle: features.meanTilt,
-            postureChangeCount: postureChanges
+            postureChangeCount: postureChanges,
+            audioRMS: audio?.audioRMS,
+            audioFloor: audio?.audioFloor,
+            breathingRate: audio?.breathingRate,
+            breathingRateVariability: audio?.breathingRateVariability
         )
         window.session = session
         context.insert(window)
 
-        SomnyaLog.window(String(format: "window n=%d rms=%.3f jerk=%.3f count=%.3f enmo=%.3f immobRun=%d%@",
+        let breathStr = audio?.breathingRate.map { String(format: "%.1fbrpm conf=%.2f", $0, audio?.confidence ?? 0) } ?? "breath=nil"
+        SomnyaLog.window(String(format: "window n=%d rms=%.3f jerk=%.3f count=%.3f enmo=%.3f immobRun=%d %@%@",
                                 samples.count, features.rms, features.jerkRMS, features.activityCount,
-                                features.enmoMean, immobilityRun, partial ? " (partial)" : ""))
+                                features.enmoMean, immobilityRun, breathStr, partial ? " (partial)" : ""))
 
         do {
             try context.save()

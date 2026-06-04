@@ -22,4 +22,25 @@ enum SomnyaConfig {
 
     /// Day boundary hour for grouping sessions into a SleepDay (default 6pm).
     static let dayBoundaryHour: Int = 18
+
+    // MARK: - Audio / breathing
+
+    /// Rate (Hz) at which the audio envelope is sampled for breathing analysis. Breathing is a
+    /// slow rhythm, so we don't need the raw 2 kHz waveform — a ~10 Hz loudness envelope is
+    /// plenty to resolve the inhale/exhale cycle and keeps memory tiny.
+    static let audioEnvelopeHz: Double = 10
+
+    /// Plausible human breathing band, in breaths per minute. Anything outside this is rejected
+    /// as noise rather than reported as a (wrong) rate. ~6 brpm (deep slow) to ~30 brpm (light/awake).
+    static let breathingMinBPM: Double = 6
+    static let breathingMaxBPM: Double = 30
+
+    /// Minimum normalized autocorrelation peak height for a breathing estimate to be trusted.
+    /// Below this the envelope has no clear periodicity (too noisy/quiet) and we report nil
+    /// rather than a fabricated rate. PLACEHOLDER — tune against real overnight envelopes.
+    static let breathingMinConfidence: Double = 0.3
+
+    /// Exponential-smoothing factor for the rolling noise floor (per audio buffer). Small =
+    /// slow to adapt (tracks the quiet baseline, ignores transient sounds).
+    static let noiseFloorSmoothing: Double = 0.02
 }
