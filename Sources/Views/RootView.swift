@@ -41,22 +41,42 @@ struct RootView: View {
 
                 Spacer()
 
-                NavigationLink {
-                    DebugLogView()
-                } label: {
-                    Label("Debug Logs", systemImage: "ladybug")
-                }
-                .buttonStyle(.bordered)
-                .tint(.white)
+                HStack {
+                    NavigationLink {
+                        SessionHistoryView()
+                    } label: {
+                        Label("History (\(sessions.count))", systemImage: "list.bullet.rectangle")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
 
-                Text("\(sessions.count) session(s) recorded")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    NavigationLink {
+                        DebugLogView()
+                    } label: {
+                        Label("Debug", systemImage: "ladybug")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                }
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.94))
             .foregroundStyle(.white)
+        }
+        .onAppear { consumePendingStartIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification)) { _ in
+            consumePendingStartIfNeeded()
+        }
+    }
+
+    /// If an App Intent (gesture/Shortcut) requested a start, honor it now that the app is live.
+    private func consumePendingStartIfNeeded() {
+        if let method = PendingSessionRequest.shared.consumePendingStart(),
+           !session.isTracking {
+            session.startSession(method: method)
+            SomnyaLog.lifecycle("Pending start consumed — session started via \(method.rawValue)")
         }
     }
 
