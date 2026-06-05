@@ -42,6 +42,13 @@ struct DebugLogView: View {
         .navigationTitle("Debug Logs")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink {
+                    ToneTestView()
+                } label: {
+                    Label("Sonar Tone", systemImage: "waveform")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Clear") { store.clear() }
             }
