@@ -35,6 +35,10 @@ final class AudioAnalyzer {
     /// first buffer once we know the real hardware sample rate.
     private var bandPass: BandPassFilter?
 
+    /// Mel-band energy extractor — captures spectral features a future learned model needs and
+    /// that can't be recomputed later without raw audio. Lazily built once we know the rate.
+    private var melExtractor: MelBandExtractor?
+
     /// Accumulator for downsampling buffer-rate RMS → envelope-rate samples.
     private var sampleClock: Double = 0
     private var hardwareSampleRate: Double = 48000
@@ -73,10 +77,15 @@ final class AudioAnalyzer {
         queue.sync {
             lastRMS = rms
 
-            // Lazily build the band-pass once we know the real hardware rate.
+            // Lazily build the band-pass + Mel extractor once we know the real hardware rate.
             if bandPass == nil {
                 bandPass = BandPassFilter(sampleRate: hardwareSampleRate)
             }
+            if melExtractor == nil {
+                melExtractor = MelBandExtractor(sampleRate: hardwareSampleRate)
+            }
+            // Accumulate this buffer's spectrum into the window's Mel bands.
+            melExtractor?.ingestFrame(samples.map { Float($0) })
             // Band-passed RMS for the SAME buffer — directly comparable to the raw RMS.
             var sumSqFiltered: Double = 0
             for v in samples {
@@ -130,6 +139,8 @@ final class AudioAnalyzer {
         let envelope: [Double]
         /// The band-passed envelope — what breathing detection actually runs on.
         let filteredEnvelope: [Double]
+        /// Per-window Mel-band energies — captured for a future learned model (nil if none).
+        let melBands: [Double]?
         /// Diagnostics: how many envelope samples this window had, and (when nil) why.
         let envelopeSampleCount: Int
         let reason: String
@@ -142,6 +153,7 @@ final class AudioAnalyzer {
             guard floorInitialized else { return nil }
             let env = envelope
             let filtered = filteredEnvelope
+            let mel = melExtractor?.snapshot()
             envelope.removeAll(keepingCapacity: true)
             filteredEnvelope.removeAll(keepingCapacity: true)
 
@@ -167,6 +179,7 @@ final class AudioAnalyzer {
                 confidence: result.confidence,
                 envelope: env,
                 filteredEnvelope: filtered,
+                melBands: mel,
                 envelopeSampleCount: filtered.count,
                 reason: result.reason
             )
@@ -182,6 +195,7 @@ final class AudioAnalyzer {
             envelope.removeAll(keepingCapacity: true)
             filteredEnvelope.removeAll(keepingCapacity: true)
             bandPass?.reset()
+            melExtractor?.reset()
             sampleClock = 0
             lastBreathingRate = nil
         }

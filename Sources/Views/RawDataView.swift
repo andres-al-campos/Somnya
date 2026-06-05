@@ -76,9 +76,9 @@ struct RawDataView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    exportCSV()
+                    exportJSON()
                 } label: {
-                    Label("Export CSV", systemImage: "square.and.arrow.up")
+                    Label("Export JSON", systemImage: "square.and.arrow.up")
                 }
                 .disabled(windows.isEmpty)
             }
@@ -93,13 +93,13 @@ struct RawDataView: View {
         }
     }
 
-    private func exportCSV() {
+    private func exportJSON() {
         do {
-            let urls = try SensorWindowCSV.writeAllTempFiles(for: session)
-            exportItem = ExportFile(urls: urls)
+            let url = try SessionJSON.writeTempFile(for: session)
+            exportItem = ExportFile(urls: [url])
         } catch {
             // What went wrong + how to recover.
-            exportError = "Couldn't write the CSV file: \(error.localizedDescription). Free up storage and try again, or restart the app."
+            exportError = "Couldn't write the JSON file: \(error.localizedDescription). Free up storage and try again, or restart the app."
         }
     }
 }

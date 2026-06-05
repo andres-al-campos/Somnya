@@ -26,9 +26,11 @@ enum SomnyaConfig {
     // MARK: - Audio / breathing
 
     /// Rate (Hz) at which the audio envelope is sampled for breathing analysis. Breathing is a
-    /// slow rhythm, so we don't need the raw 2 kHz waveform — a ~10 Hz loudness envelope is
-    /// plenty to resolve the inhale/exhale cycle and keeps memory tiny.
-    static let audioEnvelopeHz: Double = 10
+    /// slow rhythm (~4-6s/cycle), so even 4 Hz gives ~20+ samples per breath — well above what's
+    /// needed. An offline polling sweep on real nap data showed dropping 10 Hz → 2 Hz barely
+    /// changed detection, so 4 Hz halves storage with near-zero accuracy loss. Track only what's
+    /// needed. (Raise back toward 10 Hz only if sub-breath shape ever matters.)
+    static let audioEnvelopeHz: Double = 4
 
     /// Plausible human breathing band, in breaths per minute. Anything outside this is rejected
     /// as noise rather than reported as a (wrong) rate. ~6 brpm (deep slow) to ~30 brpm (light/awake).

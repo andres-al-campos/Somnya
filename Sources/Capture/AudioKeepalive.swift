@@ -34,12 +34,14 @@ final class AudioKeepalive {
 
         let session = AVAudioSession.sharedInstance()
         do {
-            // .record with .mixWithOthers so we don't rudely stop the user's other audio.
-            // Mode .default (NOT .measurement): .measurement disables the system's input gain
-            // and processing for calibrated capture — which buries a faint signal like breathing
-            // in the noise floor. .default re-enables gain/AGC so quiet breathing has a chance of
-            // rising above the floor at a realistic phone-on-nightstand distance.
-            try session.setCategory(.record, mode: .default, options: [.mixWithOthers])
+            // .playAndRecord (NOT .record): .record seizes the audio route and silences other
+            // apps — so falling asleep to music/podcast/white-noise would stop the moment a
+            // session starts. .playAndRecord + .mixWithOthers lets capture coexist with playback.
+            // Mode .default (NOT .measurement): .measurement disables the system's input gain for
+            // calibrated capture, which buries faint breathing in the noise floor; .default keeps
+            // gain/AGC on so quiet breathing can rise above the floor at nightstand distance.
+            try session.setCategory(.playAndRecord, mode: .default,
+                                    options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth])
             try session.setActive(true)
         } catch {
             SomnyaLog.capture("Audio session activation FAILED: \(error.localizedDescription). Tracking may stop when the screen locks. Check microphone permission in Settings → Somnya.")

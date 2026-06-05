@@ -28,20 +28,41 @@ BREATHING_MIN_BPM = 6.0
 BREATHING_MAX_BPM = 30.0
 
 
-def load(csv_path: Path) -> pd.DataFrame:
-    df = pd.read_csv(csv_path, parse_dates=["start_time_iso"])
-    df = df.sort_values("start_time_iso").reset_index(drop=True)
-    # Minutes from session start — friendlier x-axis than wall-clock.
-    t0 = df["start_time_iso"].iloc[0]
-    df["minutes"] = (df["start_time_iso"] - t0).dt.total_seconds() / 60.0
+def load(path: Path) -> pd.DataFrame:
+    """Load a session as a per-window DataFrame. Accepts the new single JSON export (preferred —
+    carries envelope, filtered_envelope, mel_bands, and config inline) or the legacy feature CSV."""
+    if path.suffix.lower() == ".json":
+        df = _load_json(path)
+    else:
+        df = pd.read_csv(path, parse_dates=["start_time_iso"])
+    # Normalize the time column name across formats.
+    time_col = "start" if "start" in df.columns else "start_time_iso"
+    df[time_col] = pd.to_datetime(df[time_col])
+    df = df.sort_values(time_col).reset_index(drop=True)
+    df["minutes"] = (df[time_col] - df[time_col].iloc[0]).dt.total_seconds() / 60.0
+    # Alias new JSON column names to the CSV names the rest of the tool expects.
+    aliases = {"breathing_rate_bpm": "breathing_rate_bpm", "audio_rms": "audio_rms"}
+    for src, dst in aliases.items():
+        if src in df.columns and dst not in df.columns:
+            df[dst] = df[src]
+    return df
+
+
+def _load_json(path: Path) -> pd.DataFrame:
+    import json
+    with open(path) as f:
+        doc = json.load(f)
+    df = pd.json_normalize(doc["windows"])
+    # Stash config + envelopes on the frame for the sweeps (as attrs so they survive).
+    df.attrs["config"] = doc.get("config", {})
     return df
 
 
 def audio_sanity(df: pd.DataFrame) -> str:
     """The key diagnostic: is the mic hearing breathing, or just the noise floor?"""
-    if df["audio_rms"].isna().all():
+    if "audio_rms" not in df.columns or df["audio_rms"].isna().all():
         return (
-            "AUDIO: no audio columns (session predates the audio analyzer). "
+            "AUDIO: no audio columns (session predates the audio analyzer, or mic was off). "
             "Nothing to diagnose on the mic side."
         )
     rms = df["audio_rms"].dropna()
@@ -83,19 +104,34 @@ def confidence_sweep(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def envelope_resliced(env_csv: Path, window_seconds_list=(30, 60, 120)) -> str:
-    """Your offline-reslicing idea: load the dense ~10 Hz envelope and re-run breathing detection
-    at DIFFERENT window sizes from the SAME capture — to see whether wider windows (more breaths
-    per window) would have found a rhythm the on-device 30s windows missed."""
-    if not env_csv.exists():
-        return (f"RESLICE: no envelope file at {env_csv.name} — re-export after the next test "
-                "(the app now writes a *-envelope.csv alongside the feature CSV).")
-    env = pd.read_csv(env_csv, parse_dates=["window_start_iso"])
-    # Flatten all windows back into one continuous 10 Hz envelope stream.
-    env = env.sort_values(["window_start_iso", "sample_index"])
-    stream = env["amplitude"].to_numpy()
-    hz = 10.0
-    lines = [f"RESLICE (re-detect breathing at wider windows, {len(stream)} envelope samples):"]
+def envelope_stream(path: Path, df: pd.DataFrame):
+    """Flatten the per-window envelope into one continuous stream + its sample rate. Prefers the
+    inline JSON envelope (filtered, what detection runs on); falls back to a legacy *-envelope.csv."""
+    hz = float(df.attrs.get("config", {}).get("audio_envelope_hz", 10.0))
+    # JSON path: each window row carries a 'filtered_envelope' (or 'envelope') list.
+    col = "filtered_envelope" if "filtered_envelope" in df.columns else (
+        "envelope" if "envelope" in df.columns else None)
+    if col is not None:
+        chunks = [np.asarray(v, dtype=float) for v in df[col] if isinstance(v, list) and v]
+        if chunks:
+            return np.concatenate(chunks), hz
+    # Legacy CSV path.
+    env_csv = path.with_name(path.stem + "-envelope.csv")
+    if env_csv.exists():
+        env = pd.read_csv(env_csv, parse_dates=["window_start_iso"])
+        env = env.sort_values(["window_start_iso", "sample_index"])
+        col = "filtered_amplitude" if "filtered_amplitude" in env.columns else "amplitude"
+        return env[col].to_numpy(), 10.0
+    return None, hz
+
+
+def envelope_resliced(path: Path, df: pd.DataFrame, window_seconds_list=(30, 60, 120)) -> str:
+    """Re-run breathing detection at DIFFERENT window sizes from the SAME capture — to see whether
+    wider windows (more breaths each) find a rhythm the on-device 30s windows missed."""
+    stream, hz = envelope_stream(path, df)
+    if stream is None:
+        return "RESLICE: no envelope available — re-export after the next test."
+    lines = [f"RESLICE (re-detect breathing at wider windows, {len(stream)} samples @ {hz:.0f}Hz):"]
     for ws in window_seconds_list:
         n = int(ws * hz)
         if len(stream) < n:
@@ -112,16 +148,15 @@ def envelope_resliced(env_csv: Path, window_seconds_list=(30, 60, 120)) -> str:
     return "\n".join(lines)
 
 
-def polling_sweep(env_csv: Path, rates_hz=(10, 5, 4, 2, 1)) -> str:
-    """How low can the envelope sampling rate go before breathing detection degrades? Decimate the
-    stored 10 Hz envelope to each candidate rate, re-detect on a fixed 60s window, and compare.
-    Lower viable rate = less to store/compute on-device. Captured dense once, tested at every rate."""
-    if not env_csv.exists():
-        return (f"POLLING SWEEP: no envelope file ({env_csv.name}) — re-export after the next test.")
-    env = pd.read_csv(env_csv, parse_dates=["window_start_iso"])
-    env = env.sort_values(["window_start_iso", "sample_index"])
-    stream = env["amplitude"].to_numpy()
-    base_hz = 10.0
+def polling_sweep(path: Path, df: pd.DataFrame, rates_hz=(10, 5, 4, 2, 1)) -> str:
+    """How low can the envelope sampling rate go before detection degrades? Decimate the stored
+    envelope to each candidate rate, re-detect on 60s windows, compare. Captured dense once,
+    tested at every rate."""
+    stream, base_hz = envelope_stream(path, df)
+    if stream is None:
+        return "POLLING SWEEP: no envelope available — re-export after the next test."
+    # Only sweep rates at/below what was captured.
+    rates_hz = tuple(r for r in rates_hz if r <= base_hz)
     window_s = 60
     lines = ["POLLING SWEEP (decimate envelope, re-detect on 60s windows):"]
     for rate in rates_hz:
@@ -176,7 +211,8 @@ def breathing_summary(df: pd.DataFrame) -> str:
         return f"BREATHING: 0 / {total} windows produced an estimate (all nil)."
     in_band = br[(br >= BREATHING_MIN_BPM) & (br <= BREATHING_MAX_BPM)]
     # Adjacent-window jumps reveal noise vs real signal: real breathing is stable window-to-window.
-    var = df["breathing_rate_variability"].dropna()
+    var = (df["breathing_rate_variability"].dropna()
+           if "breathing_rate_variability" in df.columns else pd.Series(dtype=float))
     lines = [
         f"BREATHING: {len(br)} / {total} windows produced an estimate.",
         f"  rate (brpm): mean={br.mean():.1f}  min={br.min():.1f}  max={br.max():.1f}",
@@ -232,30 +268,28 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Analyze a Somnya session CSV export.")
-    parser.add_argument("csv", type=Path, help="path to a somnya-session-*.csv")
+    parser.add_argument("path", type=Path,
+                        help="path to a somnya-session-*.json (preferred) or legacy .csv")
     parser.add_argument("--out", type=Path, default=None,
-                        help="directory for PNG plots (default: <csv-dir>/plots/)")
+                        help="directory for PNG plots (default: <file-dir>/plots/)")
     args = parser.parse_args(argv)
 
-    if not args.csv.exists():
-        print(f"CSV not found: {args.csv}\n"
-              f"Export one from the app (Raw Data -> Export CSV) and AirDrop it over, "
+    if not args.path.exists():
+        print(f"File not found: {args.path}\n"
+              f"Export one from the app (Raw Data -> Export JSON) and AirDrop it over, "
               f"then pass its path.", file=sys.stderr)
         return 1
 
-    out_dir = args.out or (args.csv.parent / "plots")
-    df = load(args.csv)
+    out_dir = args.out or (args.path.parent / "plots")
+    df = load(args.path)
 
-    print(f"Loaded {len(df)} windows from {args.csv.name}")
+    print(f"Loaded {len(df)} windows from {args.path.name}")
     print(f"Duration: {df['minutes'].iloc[-1]:.1f} min\n")
     print(audio_sanity(df), "\n")
     print(breathing_summary(df), "\n")
     print(confidence_sweep(df), "\n")
-
-    # Envelope CSV sits next to the feature CSV with a -envelope suffix.
-    env_csv = args.csv.with_name(args.csv.stem + "-envelope.csv")
-    print(envelope_resliced(env_csv), "\n")
-    print(polling_sweep(env_csv), "\n")
+    print(envelope_resliced(args.path, df), "\n")
+    print(polling_sweep(args.path, df), "\n")
 
     written = make_plots(df, out_dir)
     print("Plots written:")
