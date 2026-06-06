@@ -137,6 +137,17 @@ final class SensorWindow {
     /// emission-free alternative to the mic when the phone rests on the mattress. Same "capture
     /// dense, re-slice forever" rationale as the audio envelope.
     var accelEnvelope: [Double]?
+    /// Dense gyro-magnitude envelope (~8 Hz) — rotational micro-motion, for accel+gyro fusion on
+    /// heartbeat/BCG offline. Free from the same device-motion callback.
+    var gyroEnvelope: [Double]?
+    /// Mean gravity vector (g) over the window — sleep POSTURE (back / left / right side). Drift-free.
+    var gravityX: Double?
+    var gravityY: Double?
+    var gravityZ: Double?
+    /// Ambient pressure (kPa) and relative altitude (m) from the barometer, sampled per window.
+    /// Tracks weather fronts that affect sleep; possibly breathing micro-pressure. nil if no barometer.
+    var pressureKPa: Double?
+    var relativeAltitudeM: Double?
 
     // Microphone features (nil until the mic analyzer lands; persisted alongside accel).
     var audioRMS: Double?
@@ -177,6 +188,12 @@ final class SensorWindow {
          tiltAngle: Double,
          postureChangeCount: Int,
          accelEnvelope: [Double]? = nil,
+         gyroEnvelope: [Double]? = nil,
+         gravityX: Double? = nil,
+         gravityY: Double? = nil,
+         gravityZ: Double? = nil,
+         pressureKPa: Double? = nil,
+         relativeAltitudeM: Double? = nil,
          audioRMS: Double? = nil,
          audioFloor: Double? = nil,
          breathingRate: Double? = nil,
@@ -195,6 +212,12 @@ final class SensorWindow {
         self.tiltAngle = tiltAngle
         self.postureChangeCount = postureChangeCount
         self.accelEnvelope = accelEnvelope
+        self.gyroEnvelope = gyroEnvelope
+        self.gravityX = gravityX
+        self.gravityY = gravityY
+        self.gravityZ = gravityZ
+        self.pressureKPa = pressureKPa
+        self.relativeAltitudeM = relativeAltitudeM
         self.audioRMS = audioRMS
         self.audioFloor = audioFloor
         self.breathingRate = breathingRate

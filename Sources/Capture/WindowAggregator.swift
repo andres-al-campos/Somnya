@@ -27,6 +27,10 @@ final class WindowAggregator {
     /// Kept as a closure so the aggregator stays decoupled from the audio layer.
     var audioFeatureProvider: (() -> AudioAnalyzer.WindowFeatures?)?
 
+    /// Pulled at each flush for the latest barometer reading (pressure kPa, relative altitude m).
+    /// nil when no barometer. Kept as a closure so the aggregator stays decoupled from the sensor.
+    var barometerProvider: (() -> (pressureKPa: Double?, relativeAltitudeM: Double?))?
+
     init(context: ModelContext, session: SleepSession) {
         self.context = context
         self.session = session
@@ -73,6 +77,8 @@ final class WindowAggregator {
 
         // Pull audio features for this window (nil if mic off / no clear signal).
         let audio = audioFeatureProvider?()
+        // Pull the latest barometer reading (nil if no barometer / not yet delivered).
+        let baro = barometerProvider?()
 
         let window = SensorWindow(
             startTime: start,
@@ -85,6 +91,12 @@ final class WindowAggregator {
             tiltAngle: features.meanTilt,
             postureChangeCount: postureChanges,
             accelEnvelope: features.accelEnvelope.isEmpty ? nil : features.accelEnvelope,
+            gyroEnvelope: features.gyroEnvelope.isEmpty ? nil : features.gyroEnvelope,
+            gravityX: features.gravityX,
+            gravityY: features.gravityY,
+            gravityZ: features.gravityZ,
+            pressureKPa: baro?.pressureKPa,
+            relativeAltitudeM: baro?.relativeAltitudeM,
             audioRMS: audio?.audioRMS,
             audioFloor: audio?.audioFloor,
             breathingRate: audio?.breathingRate,
@@ -134,6 +146,14 @@ final class WindowAggregator {
         /// Dense accel-magnitude envelope (~accelEnvelopeHz, gravity-removed) for offline
         /// breathing-from-bed-motion analysis. Empty if the window had no usable samples.
         let accelEnvelope: [Double]
+        /// Dense gyro-magnitude envelope (~accelEnvelopeHz) — rotational micro-motion, fused with
+        /// accel for heartbeat/BCG offline. Empty if no usable samples.
+        let gyroEnvelope: [Double]
+        /// Mean gravity vector over the window (g). Encodes sleep POSTURE: which way "down" points
+        /// relative to the device → back / left-side / right-side. Drift-free, unlike integrated tilt.
+        let gravityX: Double
+        let gravityY: Double
+        let gravityZ: Double
     }
 
     /// Pure function so it's unit-testable without sensors. Computes the day-one feature set
@@ -141,7 +161,8 @@ final class WindowAggregator {
     static func computeFeatures(_ s: [MotionSample]) -> Features {
         guard !s.isEmpty else {
             return Features(rms: 0, jerkRMS: 0, activityCount: 0, enmoMean: 0, meanTilt: 0,
-                            accelEnvelope: [])
+                            accelEnvelope: [], gyroEnvelope: [],
+                            gravityX: 0, gravityY: 0, gravityZ: 0)
         }
 
         // Per-sample acceleration magnitude.
@@ -177,8 +198,22 @@ final class WindowAggregator {
                                        fromHz: SomnyaConfig.analysisHz,
                                        toHz: SomnyaConfig.accelEnvelopeHz)
 
+        // Gyro magnitude envelope — same rate as accel, for accel+gyro fusion on heartbeat/BCG.
+        let gyroMags = s.map { sqrt($0.rx * $0.rx + $0.ry * $0.ry + $0.rz * $0.rz) }
+        let gyroEnvelope = downsample(gyroMags,
+                                      fromHz: SomnyaConfig.analysisHz,
+                                      toHz: SomnyaConfig.accelEnvelopeHz)
+
+        // Mean gravity vector → posture. Averaging over the window is safe: gravity is ~constant
+        // while still, and a posture flip mid-window is rare (and shows up as a posture change).
+        let gravityX = s.map(\.gx).reduce(0, +) / Double(s.count)
+        let gravityY = s.map(\.gy).reduce(0, +) / Double(s.count)
+        let gravityZ = s.map(\.gz).reduce(0, +) / Double(s.count)
+
         return Features(rms: rms, jerkRMS: jerkRMS, activityCount: activityCount,
-                        enmoMean: enmoMean, meanTilt: meanTilt, accelEnvelope: accelEnvelope)
+                        enmoMean: enmoMean, meanTilt: meanTilt, accelEnvelope: accelEnvelope,
+                        gyroEnvelope: gyroEnvelope,
+                        gravityX: gravityX, gravityY: gravityY, gravityZ: gravityZ)
     }
 
     /// Decimate a series from `fromHz` to (approximately) `toHz` by averaging consecutive samples

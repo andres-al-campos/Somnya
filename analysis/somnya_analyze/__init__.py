@@ -248,6 +248,61 @@ def _bandpass_bpm(x, hz, low_bpm, high_bpm, order=4):
     return filtfilt(b, a, x)
 
 
+def posture_summary(df: pd.DataFrame) -> str:
+    """Decode the mean-gravity vector per window into sleep posture (back / left / right / face-down /
+    upright) and report how the night was distributed. Phone lies flat on the mattress, so 'down'
+    (gravity) relative to the device axes tells us how the body — and the phone with it — is oriented.
+    Apnea is worse supine (on the back), so this is a real future-feature signal."""
+    need = {"gravity_x", "gravity_y", "gravity_z"}
+    if not need.issubset(df.columns):
+        return ("POSTURE: no gravity vector in this file — re-export after a night on the build with\n"
+                "  gyro/gravity capture to see which side you slept on.")
+    gx = df["gravity_x"].to_numpy(dtype=float)
+    gy = df["gravity_y"].to_numpy(dtype=float)
+    gz = df["gravity_z"].to_numpy(dtype=float)
+
+    # iOS device frame: x = right edge, y = top edge, z = out of screen. Gravity points toward earth.
+    # Phone flat, screen up on a bedside table → gz ≈ -1. Lying screen-down → gz ≈ +1. On its side
+    # (phone tucked beside you on a side-sleep) → gx dominates. This is a heuristic, refined with data.
+    def classify(x, y, z):
+        ax, ay, az = abs(x), abs(y), abs(z)
+        if az >= ax and az >= ay:
+            return "screen-up" if z < 0 else "face-down"
+        if ax >= ay:
+            return "left-side" if x > 0 else "right-side"
+        return "head-up" if y < 0 else "head-down"
+
+    labels = [classify(x, y, z) for x, y, z in zip(gx, gy, gz)]
+    total = len(labels)
+    from collections import Counter
+    counts = Counter(labels)
+    lines = ["POSTURE (mean gravity → orientation; heuristic, phone-on-mattress):"]
+    for label, c in counts.most_common():
+        lines.append(f"  {label:11s}: {c:4d} windows ({100*c/total:4.1f}%)")
+    # Posture changes = how often the label flips (a restlessness proxy).
+    flips = sum(1 for a, b in zip(labels, labels[1:]) if a != b)
+    lines.append(f"  position changes: {flips} (label flips across {total} windows)")
+    lines.append("  NOTE: labels map the PHONE's orientation; calibrate to body posture once we "
+                 "correlate a known night.")
+    return "\n".join(lines)
+
+
+def pressure_summary(df: pd.DataFrame) -> str:
+    """Barometer sanity: did pressure drift over the night (weather front) and is the per-window
+    noise small enough that breathing micro-pressure could ever show? Just a first look."""
+    if "pressure_kpa" not in df.columns:
+        return "PRESSURE: no barometer data in this file (device may lack one, or pre-capture)."
+    p = df["pressure_kpa"].dropna().to_numpy(dtype=float)
+    if p.size == 0:
+        return "PRESSURE: column present but empty."
+    drift = p[-1] - p[0]
+    lines = ["PRESSURE (barometer, kPa):",
+             f"  start={p[0]:.3f}  end={p[-1]:.3f}  drift={drift:+.3f} kPa over the night",
+             f"  range={p.max()-p.min():.3f}  std={np.std(p):.4f}"]
+    lines.append("  (a steady fall often precedes worse weather/sleep; large std = noisy sensor.)")
+    return "\n".join(lines)
+
+
 def _estimate_periodic_peak(x, hz, min_bpm, max_bpm, min_conf=0.30):
     """Like _estimate_breathing but only accepts a peak that is a genuine INTERIOR local maximum of
     the autocorrelation — i.e. a real bump, not the band-edge. Broadband residual (leaked breathing,
@@ -442,6 +497,8 @@ def main(argv: list[str] | None = None) -> int:
     print(polling_sweep(args.path, df), "\n")
     print(accel_breathing(df), "\n")
     print(heartbeat_detect(df), "\n")
+    print(posture_summary(df), "\n")
+    print(pressure_summary(df), "\n")
 
     written = make_plots(df, out_dir)
     print("Plots written:")

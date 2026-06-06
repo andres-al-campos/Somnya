@@ -70,6 +70,10 @@ final class SessionManager: ObservableObject {
         agg.audioFeatureProvider = { [weak self] in
             self?.audio.analyzer.snapshotWindow()
         }
+        // At each flush, stamp the window with the latest barometer reading (nil if no barometer).
+        agg.barometerProvider = { [weak self] in
+            (self?.motion.latestPressureKPa, self?.motion.latestRelativeAltitudeM)
+        }
         aggregator = agg
         motion.onSample = { [weak self] sample in
             // MotionCapture delivers off the main thread; hop back for SwiftData + UI.

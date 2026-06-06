@@ -55,6 +55,13 @@ enum SessionJSON {
         ]
         // Dense accel envelope (bed-motion breathing) — omit when absent (e.g. empty window).
         if let v = w.accelEnvelope { dict["accel_envelope"] = v }
+        if let v = w.gyroEnvelope { dict["gyro_envelope"] = v }
+        // Posture (mean gravity vector) + ambient pressure.
+        if let v = w.gravityX { dict["gravity_x"] = v }
+        if let v = w.gravityY { dict["gravity_y"] = v }
+        if let v = w.gravityZ { dict["gravity_z"] = v }
+        if let v = w.pressureKPa { dict["pressure_kpa"] = v }
+        if let v = w.relativeAltitudeM { dict["relative_altitude_m"] = v }
         // Audio fields are nil on pre-analyzer or mic-off windows — omit rather than write nulls.
         if let v = w.audioRMS { dict["audio_rms"] = v }
         if let v = w.audioFloor { dict["audio_floor"] = v }

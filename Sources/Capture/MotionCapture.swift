@@ -11,6 +11,16 @@ struct MotionSample {
     /// Device attitude — pitch/roll used for tilt/orientation features.
     let pitch: Double
     let roll: Double
+    /// rotationRate (rad/s), per axis — rotational micro-motion the accelerometer misses. Free
+    /// from the SAME device-motion callback; useful for fusing with accel on heartbeat/BCG.
+    let rx: Double
+    let ry: Double
+    let rz: Double
+    /// gravity vector (g), per axis — the device's orientation relative to down. Drift-free posture
+    /// signal: which side the sleeper is on (back/left/right). Free from the same callback.
+    let gx: Double
+    let gy: Double
+    let gz: Double
 }
 
 /// CMMotionManager wrapper: captures device motion at 50 Hz and decimates to 10 Hz for
@@ -20,6 +30,15 @@ struct MotionSample {
 final class MotionCapture {
     private let manager = CMMotionManager()
     private let queue = OperationQueue()
+
+    /// Barometer. Reports ~1 Hz on its own cadence (no permission needed). We keep the latest
+    /// reading so the aggregator can stamp each window with ambient pressure — tracks weather
+    /// fronts that affect sleep, and is sensitive enough to *maybe* show breathing micro-pressure.
+    private let altimeter = CMAltimeter()
+    private let altimeterQueue = OperationQueue()
+    /// Latest relative altitude (m) and pressure (kPa); nil until the first reading / if unavailable.
+    private(set) var latestPressureKPa: Double?
+    private(set) var latestRelativeAltitudeM: Double?
 
     private let captureHz: Double = 50
     private let decimationFactor = 5   // 50 Hz → 10 Hz
@@ -78,7 +97,13 @@ final class MotionCapture {
                 ay: motion.userAcceleration.y,
                 az: motion.userAcceleration.z,
                 pitch: motion.attitude.pitch,
-                roll: motion.attitude.roll
+                roll: motion.attitude.roll,
+                rx: motion.rotationRate.x,
+                ry: motion.rotationRate.y,
+                rz: motion.rotationRate.z,
+                gx: motion.gravity.x,
+                gy: motion.gravity.y,
+                gz: motion.gravity.z
             )
 
             // Heartbeat log ~ once/sec (every 10th decimated sample) so the log proves
@@ -94,11 +119,36 @@ final class MotionCapture {
         isActive = true
         hasDeliveredSample = false
         SomnyaLog.capture("Device motion STARTED at \(captureHz)Hz → \(captureHz / Double(decimationFactor))Hz analysis.")
+
+        startAltimeter()
+    }
+
+    private func startAltimeter() {
+        guard CMAltimeter.isRelativeAltitudeAvailable() else {
+            SomnyaLog.capture("Barometer NOT available on this device — pressure won't be recorded (harmless; other sensors unaffected).")
+            return
+        }
+        altimeterQueue.maxConcurrentOperationCount = 1
+        altimeter.startRelativeAltitudeUpdates(to: altimeterQueue) { [weak self] data, error in
+            guard let self else { return }
+            if let error {
+                SomnyaLog.capture("Barometer error: \(error.localizedDescription)")
+                return
+            }
+            guard let data else { return }
+            // pressure is in kPa; relativeAltitude in m (relative to start of updates).
+            self.latestPressureKPa = data.pressure.doubleValue
+            self.latestRelativeAltitudeM = data.relativeAltitude.doubleValue
+        }
+        SomnyaLog.capture("Barometer STARTED (~1Hz, pressure stamped per window).")
     }
 
     func stop() {
         guard isActive else { return }
         manager.stopDeviceMotionUpdates()
+        altimeter.stopRelativeAltitudeUpdates()
+        latestPressureKPa = nil
+        latestRelativeAltitudeM = nil
         isActive = false
         hasDeliveredSample = false
         onFirstSample = nil
