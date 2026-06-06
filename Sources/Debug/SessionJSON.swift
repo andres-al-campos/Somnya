@@ -29,6 +29,7 @@ enum SessionJSON {
                 "breathing_min_confidence": SomnyaConfig.breathingMinConfidence,
                 "band_pass_low_hz": SomnyaConfig.breathingBandLowHz,
                 "band_pass_high_hz": SomnyaConfig.breathingBandHighHz,
+                "accel_envelope_hz": SomnyaConfig.accelEnvelopeHz,
             ],
             "windows": windows.map { windowDict($0, iso: iso) },
         ]
@@ -52,6 +53,8 @@ enum SessionJSON {
             "assigned_stage": w.assignedStageRaw,
             "assigned_confidence": w.assignedConfidence,
         ]
+        // Dense accel envelope (bed-motion breathing) — omit when absent (e.g. empty window).
+        if let v = w.accelEnvelope { dict["accel_envelope"] = v }
         // Audio fields are nil on pre-analyzer or mic-off windows — omit rather than write nulls.
         if let v = w.audioRMS { dict["audio_rms"] = v }
         if let v = w.audioFloor { dict["audio_floor"] = v }

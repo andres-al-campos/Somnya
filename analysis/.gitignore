@@ -6,5 +6,7 @@ __pycache__/
 # Generated analysis output
 plots/
 
-# Exported session data (machine-specific captures, not source)
+# Exported session data (personal sleep captures, not source — never commit)
 somnya-session-*.csv
+somnya-session-*.json
+sessions/

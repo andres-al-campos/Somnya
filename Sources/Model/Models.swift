@@ -132,6 +132,11 @@ final class SensorWindow {
     /// Smoothed tilt angle (van Hees z-angle), discretized posture, and posture changes.
     var tiltAngle: Double
     var postureChangeCount: Int
+    /// Dense accel-magnitude envelope (~8 Hz, gravity-removed) for this window. Captured so the
+    /// breathing estimator can run on BED MOTION offline (ballistocardiography) — a silent,
+    /// emission-free alternative to the mic when the phone rests on the mattress. Same "capture
+    /// dense, re-slice forever" rationale as the audio envelope.
+    var accelEnvelope: [Double]?
 
     // Microphone features (nil until the mic analyzer lands; persisted alongside accel).
     var audioRMS: Double?
@@ -171,6 +176,7 @@ final class SensorWindow {
          immobilityRunLength: Int,
          tiltAngle: Double,
          postureChangeCount: Int,
+         accelEnvelope: [Double]? = nil,
          audioRMS: Double? = nil,
          audioFloor: Double? = nil,
          breathingRate: Double? = nil,
@@ -188,6 +194,7 @@ final class SensorWindow {
         self.immobilityRunLength = immobilityRunLength
         self.tiltAngle = tiltAngle
         self.postureChangeCount = postureChangeCount
+        self.accelEnvelope = accelEnvelope
         self.audioRMS = audioRMS
         self.audioFloor = audioFloor
         self.breathingRate = breathingRate

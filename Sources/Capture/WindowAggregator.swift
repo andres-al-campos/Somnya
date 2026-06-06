@@ -84,6 +84,7 @@ final class WindowAggregator {
             immobilityRunLength: immobilityRun,
             tiltAngle: features.meanTilt,
             postureChangeCount: postureChanges,
+            accelEnvelope: features.accelEnvelope.isEmpty ? nil : features.accelEnvelope,
             audioRMS: audio?.audioRMS,
             audioFloor: audio?.audioFloor,
             breathingRate: audio?.breathingRate,
@@ -130,13 +131,17 @@ final class WindowAggregator {
         let activityCount: Double
         let enmoMean: Double
         let meanTilt: Double
+        /// Dense accel-magnitude envelope (~accelEnvelopeHz, gravity-removed) for offline
+        /// breathing-from-bed-motion analysis. Empty if the window had no usable samples.
+        let accelEnvelope: [Double]
     }
 
     /// Pure function so it's unit-testable without sensors. Computes the day-one feature set
     /// from a window of decimated samples.
     static func computeFeatures(_ s: [MotionSample]) -> Features {
         guard !s.isEmpty else {
-            return Features(rms: 0, jerkRMS: 0, activityCount: 0, enmoMean: 0, meanTilt: 0)
+            return Features(rms: 0, jerkRMS: 0, activityCount: 0, enmoMean: 0, meanTilt: 0,
+                            accelEnvelope: [])
         }
 
         // Per-sample acceleration magnitude.
@@ -164,7 +169,33 @@ final class WindowAggregator {
         let meanTilt = s.map { sqrt($0.pitch * $0.pitch + $0.roll * $0.roll) }
             .reduce(0, +) / Double(s.count)
 
+        // Dense envelope: the magnitude series downsampled from the analysis rate (10 Hz) to the
+        // configured accel-envelope rate. Breathing is a slow oscillation of this magnitude when
+        // the phone rests on the mattress. Detrending is left to the offline estimator (same as
+        // the audio path), so we keep the raw magnitude here.
+        let accelEnvelope = downsample(mags,
+                                       fromHz: SomnyaConfig.analysisHz,
+                                       toHz: SomnyaConfig.accelEnvelopeHz)
+
         return Features(rms: rms, jerkRMS: jerkRMS, activityCount: activityCount,
-                        enmoMean: enmoMean, meanTilt: meanTilt)
+                        enmoMean: enmoMean, meanTilt: meanTilt, accelEnvelope: accelEnvelope)
+    }
+
+    /// Decimate a series from `fromHz` to (approximately) `toHz` by averaging consecutive samples
+    /// into bins. Averaging (rather than picking every Nth) is a mild anti-alias and keeps the slow
+    /// breathing oscillation intact. If toHz >= fromHz the input is returned unchanged.
+    static func downsample(_ xs: [Double], fromHz: Double, toHz: Double) -> [Double] {
+        guard !xs.isEmpty, toHz > 0, fromHz > 0, toHz < fromHz else { return xs }
+        let factor = fromHz / toHz                     // e.g. 10/8 = 1.25 samples per output
+        let outCount = max(1, Int((Double(xs.count) / factor).rounded()))
+        var out: [Double] = []
+        out.reserveCapacity(outCount)
+        for i in 0..<outCount {
+            let lo = Int((Double(i) * factor).rounded(.down))
+            let hi = min(xs.count, Int((Double(i + 1) * factor).rounded(.down)))
+            let bin = xs[lo..<max(lo + 1, hi)]
+            out.append(bin.reduce(0, +) / Double(bin.count))
+        }
+        return out
     }
 }

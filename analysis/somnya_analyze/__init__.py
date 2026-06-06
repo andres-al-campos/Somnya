@@ -27,6 +27,11 @@ import pandas as pd
 BREATHING_MIN_BPM = 6.0
 BREATHING_MAX_BPM = 30.0
 
+# Plausible resting/sleeping heart rate band (bpm). 40 (athlete deep sleep) to 120 (covers
+# elevated/REM). In Hz that's ~0.67-2.0 Hz — well within the 8Hz accel envelope's Nyquist (4Hz).
+HEART_MIN_BPM = 40.0
+HEART_MAX_BPM = 120.0
+
 
 def load(path: Path) -> pd.DataFrame:
     """Load a session as a per-window DataFrame. Accepts the new single JSON export (preferred —
@@ -179,6 +184,151 @@ def polling_sweep(path: Path, df: pd.DataFrame, rates_hz=(10, 5, 4, 2, 1)) -> st
     return "\n".join(lines)
 
 
+def accel_breathing(df: pd.DataFrame) -> str:
+    """Run the SAME envelope→autocorrelation breathing estimator on the dense ACCEL envelope —
+    i.e. can the phone-on-mattress accelerometer see breathing as bed motion (ballistocardiography)?
+    A silent, emission-free alternative to the mic. Reports a rms/floor-style sanity check plus
+    detection at 30/60/120s windows, so it can be compared directly against the mic results above."""
+    if "accel_envelope" not in df.columns:
+        return ("ACCEL BREATHING: no accel_envelope in this file — it predates the dense-accel\n"
+                "  capture. Re-export after a phone-on-mattress night on the new build to test this.")
+    hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
+    chunks = [np.asarray(v, dtype=float) for v in df["accel_envelope"]
+              if isinstance(v, list) and v]
+    if not chunks:
+        return "ACCEL BREATHING: accel_envelope column present but empty."
+    stream = np.concatenate(chunks)
+
+    lines = [f"ACCEL BREATHING (bed motion, {len(stream)} samples @ {hz:.0f}Hz):"]
+
+    # Sanity: how far does the breathing-band oscillation rise above the broadband fluctuation?
+    # Detrended std (signal) vs the median per-window std (a noise-floor proxy). >~2x = promising.
+    sig = float(np.std(stream - np.mean(stream)))
+    per_window = np.array([float(np.std(c - np.mean(c))) for c in chunks if len(c) > 1])
+    floor = float(np.median(per_window)) if per_window.size else 0.0
+    ratio = sig / floor if floor > 1e-12 else float("inf")
+    lines.append(f"  signal std={sig:.5f}  per-window-median std={floor:.5f}  ratio={ratio:.2f}x")
+
+    # Detection at several window sizes (reuse the shared estimator).
+    for ws in (30, 60, 120):
+        n = int(ws * hz)
+        if len(stream) < n:
+            lines.append(f"  {ws:3d}s window: not enough data ({len(stream)} < {n})")
+            continue
+        hits, confs, rates = 0, [], []
+        for start in range(0, len(stream) - n + 1, n):
+            bpm, conf = _estimate_breathing(stream[start:start + n], hz)
+            if bpm is not None:
+                hits += 1
+                confs.append(conf)
+                rates.append(bpm)
+        if confs:
+            lines.append(f"  {ws:3d}s window: {hits} estimate(s), avg_conf={np.mean(confs):.2f}, "
+                         f"rate mean={np.mean(rates):.1f} brpm")
+        else:
+            lines.append(f"  {ws:3d}s window: 0 estimates (no rhythm found)")
+    lines.append("  (compare ratio + conf to the mic above — higher here = bed motion is the better signal)")
+    return "\n".join(lines)
+
+
+def _bandpass_bpm(x, hz, low_bpm, high_bpm, order=4):
+    """Zero-phase Butterworth band-pass (scipy). A SHARP filter is essential here: the heartbeat is
+    ~25x weaker than breathing and sits a couple of octaves above it, so a gentle filter leaks the
+    huge breathing wave into the heart band and drowns the pulse. filtfilt = no phase distortion,
+    so peak timing (→ rate) is preserved. Falls back to the raw signal if the band is degenerate."""
+    from scipy.signal import butter, filtfilt
+    x = np.asarray(x, dtype=float)
+    nyq = hz / 2.0
+    lo = (low_bpm / 60.0) / nyq
+    hi = (high_bpm / 60.0) / nyq
+    lo, hi = max(lo, 1e-4), min(hi, 0.999)
+    if not (0 < lo < hi < 1) or len(x) <= order * 3:
+        return x - x.mean()
+    b, a = butter(order, [lo, hi], btype="band")
+    return filtfilt(b, a, x)
+
+
+def _estimate_periodic_peak(x, hz, min_bpm, max_bpm, min_conf=0.30):
+    """Like _estimate_breathing but only accepts a peak that is a genuine INTERIOR local maximum of
+    the autocorrelation — i.e. a real bump, not the band-edge. Broadband residual (leaked breathing,
+    noise) makes autocorr fall monotonically from the shortest lag; that produces a fake 'peak' at
+    min_lag. Requiring corr[lag] > corr[lag-1] and > corr[lag+1] rejects that, so a null reads null."""
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    x = x - x.mean()
+    energy = float((x * x).sum())
+    if energy <= 1e-12 or n <= 4:
+        return None, 0.0
+    min_lag = int((60.0 / max_bpm) * hz)
+    max_lag = min(n - 1, int((60.0 / min_bpm) * hz))
+    if max_lag - min_lag < 2 or min_lag < 1:
+        return None, 0.0
+    corr = np.array([float((x[:n - lag] * x[lag:]).sum()) / energy
+                     for lag in range(min_lag, max_lag + 1)])
+    # Interior local maxima only (exclude the two ends so a band-edge slope can't win).
+    best_lag, best_corr = -1, -np.inf
+    for i in range(1, len(corr) - 1):
+        if corr[i] > corr[i - 1] and corr[i] >= corr[i + 1] and corr[i] > best_corr:
+            best_corr, best_lag = corr[i], min_lag + i
+    if best_lag <= 0 or best_corr < min_conf:
+        return None, max(0.0, best_corr)
+    return 60.0 / (best_lag / hz), float(best_corr)
+
+
+def heartbeat_detect(df: pd.DataFrame) -> str:
+    """Can the phone-on-mattress accelerometer see the HEARTBEAT (ballistocardiography)? The heart's
+    recoil is a small 0.7-2 Hz motion sitting UNDER the much larger breathing wave. We band-pass the
+    accel envelope to the heart band (stripping breathing) then autocorrelate for a pulse rate.
+
+    HONEST CAVEAT: the BCG signal is often 10-100x weaker than breathing and a soft mattress absorbs
+    it. A clear result here is exciting (HRV → 'how restful was your sleep'); a null result is the
+    expected outcome and just means we'd need a stronger signal (higher-rate accel, or sonar)."""
+    if "accel_envelope" not in df.columns:
+        return ("HEARTBEAT (accel BCG): no accel_envelope in this file — re-export after a\n"
+                "  phone-on-mattress night on the new build to test this.")
+    hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
+    chunks = [np.asarray(v, dtype=float) for v in df["accel_envelope"]
+              if isinstance(v, list) and v]
+    if not chunks:
+        return "HEARTBEAT (accel BCG): accel_envelope present but empty."
+    stream = np.concatenate(chunks)
+
+    # Nyquist sanity: need the sample rate to comfortably exceed the heart band.
+    if hz < HEART_MAX_BPM / 60.0 * 2:
+        return (f"HEARTBEAT (accel BCG): envelope is only {hz:.0f}Hz — too slow to resolve up to "
+                f"{HEART_MAX_BPM:.0f}bpm ({HEART_MAX_BPM/60:.1f}Hz). Raise accel_envelope_hz.")
+
+    band = _bandpass_bpm(stream, hz, HEART_MIN_BPM, HEART_MAX_BPM)
+    lines = [f"HEARTBEAT (accel BCG, {len(stream)} samples @ {hz:.0f}Hz, band {HEART_MIN_BPM:.0f}-"
+             f"{HEART_MAX_BPM:.0f}bpm):"]
+
+    # Detect on 30/60s windows in the heart band (note: same estimator, heart-band lags).
+    for ws in (30, 60):
+        n = int(ws * hz)
+        if len(band) < n:
+            lines.append(f"  {ws:3d}s window: not enough data")
+            continue
+        hits, confs, rates = 0, [], []
+        for start in range(0, len(band) - n + 1, n):
+            bpm, conf = _estimate_periodic_peak(band[start:start + n], hz,
+                                                min_bpm=HEART_MIN_BPM, max_bpm=HEART_MAX_BPM,
+                                                min_conf=0.30)
+            if bpm is not None:
+                hits += 1
+                confs.append(conf)
+                rates.append(bpm)
+        total = (len(band) - n) // n + 1
+        if confs:
+            lines.append(f"  {ws:3d}s window: {hits}/{total} estimate(s), "
+                         f"avg_conf={np.mean(confs):.2f}, rate mean={np.mean(rates):.0f} bpm "
+                         f"(std {np.std(rates):.0f})")
+        else:
+            lines.append(f"  {ws:3d}s window: 0/{total} estimates — heartbeat not visible in accel")
+    lines.append("  Interpret: stable rate in 50-70bpm + conf>0.4 = real BCG (exciting). "
+                 "Scattered/low-conf = buried (expected); needs higher-rate accel or sonar.")
+    return "\n".join(lines)
+
+
 def _estimate_breathing(envelope, hz, min_bpm=BREATHING_MIN_BPM, max_bpm=BREATHING_MAX_BPM,
                         min_conf=0.30):
     """Port of AudioAnalyzer.estimateBreathing — kept in sync so offline re-slicing matches the
@@ -290,6 +440,8 @@ def main(argv: list[str] | None = None) -> int:
     print(confidence_sweep(df), "\n")
     print(envelope_resliced(args.path, df), "\n")
     print(polling_sweep(args.path, df), "\n")
+    print(accel_breathing(df), "\n")
+    print(heartbeat_detect(df), "\n")
 
     written = make_plots(df, out_dir)
     print("Plots written:")

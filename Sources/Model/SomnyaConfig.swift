@@ -51,4 +51,15 @@ enum SomnyaConfig {
     /// gain can't (it scales noise too). PLACEHOLDER edges — tune against real before/after data.
     static let breathingBandLowHz: Double = 50
     static let breathingBandHighHz: Double = 1000
+
+    // MARK: - Accelerometer breathing (phone-on-mattress)
+
+    /// Rate (Hz) at which the accelerometer magnitude envelope is captured per window, so the same
+    /// envelope→autocorrelation breathing estimator can run on bed motion (ballistocardiography-
+    /// style) — a silent, emission-free alternative to the mic when the phone rests on the mattress.
+    /// Breathing peaks at 0.5 Hz, so 8 Hz is 16x oversampled — ample margin — while also leaving
+    /// headroom for the faster heartbeat jolt (~1-2 Hz) if we ever chase that. Storage is ~2x the
+    /// audio envelope, negligible against the audio data already stored. "Capture dense, re-slice
+    /// forever" — same philosophy as the audio envelope and Mel bands.
+    static let accelEnvelopeHz: Double = 8
 }
