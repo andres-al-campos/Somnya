@@ -14,8 +14,13 @@ enum SomnyaConfig {
     static let analysisHz: Double = 10
 
     /// Activity-count below which a window is considered "still" (immobility-run accrual).
-    /// PLACEHOLDER — to be replaced by per-night auto-scaled threshold.
-    static let movementThreshold: Double = 0.05
+    /// CALIBRATED against real nap data (June 2026): the quiet/asleep baseline sits at activity
+    /// ~0.30–0.45 (median 0.36), while genuine movement events jump to >1.0 (p95 ≈ 4.5). There's a
+    /// clean valley around 0.6 separating them. The old 0.05 was far below the noise floor — NO
+    /// window ever cleared it, so immobility_run_length was stuck at 0 (a real bug). 0.6 puts the
+    /// still baseline below threshold and movement spikes above it. Still a per-device constant for
+    /// now; per-night auto-scaling (subtract each night's own baseline) is the eventual refinement.
+    static let movementThreshold: Double = 0.6
 
     /// Tilt change (radians) between windows that counts as a posture change.
     static let postureChangeRadians: Double = 0.35  // ~20°

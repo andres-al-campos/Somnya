@@ -494,11 +494,15 @@ def breathing_summary(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-# Somnya's confidence colormap: blue (unsure) → green → yellow → red (confident). Position encodes
-# the value; color temperature encodes how much to trust it. The reference for the native SwiftUI
-# chart later. (Prototype intentionally avoids the red-white-blue diverging map.)
+# Somnya's confidence colormap, traffic-light semantics around the color wheel:
+#   GREEN (high confidence / trust) → blue → purple → RED (low confidence / don't trust).
+# Position encodes the value; hue encodes how much to trust it. Green=good is the intuitive read.
+# The reference for the native SwiftUI chart later. NOTE: this maps HIGH conf → green, so when used
+# with a Normalize the array is confidence directly (high→green end). The cmap is ordered
+# green→red, so callers pass confidence and set vmin/vmax normally (green at high end).
 from matplotlib.colors import LinearSegmentedColormap as _LSC
-CONF_CMAP = _LSC.from_list("somnya_conf", ["#2c6fbb", "#27ae60", "#f1c40f", "#e74c3c"])
+# Ordered low→high index = red→...→green so that, with confidence as the array, HIGH lands on green.
+CONF_CMAP = _LSC.from_list("somnya_conf", ["#e74c3c", "#8e44ad", "#2c6fbb", "#27ae60"])
 
 
 def plot_value_with_confidence(ax, minutes, values, conf, *, conf_lo=0.15, conf_hi=0.55,
