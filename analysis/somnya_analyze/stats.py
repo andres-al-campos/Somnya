@@ -372,15 +372,22 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
             else:
                 i += 1
 
-    # The still baseline line at y=0 (the restful default; dots rise above it).
-    ax.axhline(0, color="#27ae60", lw=1, alpha=0.4)
+    # LOG y-axis: movement spans ~4x on-bed (and ~18x if in-hand spikes are included). On a linear
+    # axis the dense low end (most stirs sit 0.6-1.0) smears into a thin band while one big dot floats
+    # alone. Log gives the common small movements room and compresses the rare big ones — equal
+    # visual steps for equal *multiplicative* change, which is how intensity is actually perceived.
+    ax.set_yscale("log")
+    ax.axhline(MOVEMENT_THRESHOLD, color="#27ae60", lw=1, alpha=0.5, ls="--")  # the still floor
 
     if events:
         xs = [e.minute for e in events]
         ys = [e.activity for e in events]
-        # Size + color scale with intensity. Small = subtle, large = bold red.
-        sizes = [40 if not e.large else 160 for e in events]
-        norm = plt.Normalize(MOVEMENT_THRESHOLD, max(2.0, max(ys)))
+        ymax = max(ys)
+        # Dot AREA ∝ intensity (radius ∝ √intensity) — the eye reads area as magnitude, so size by
+        # area not radius, else big values look exaggerated. matplotlib `s` IS area, so feed it
+        # ~linearly in activity (capped) for an area-proportional, perception-honest scale.
+        sizes = [30 + 90 * (y / ymax) for y in ys]
+        norm = plt.Normalize(MOVEMENT_THRESHOLD, max(2.0, ymax))
         # Invert so HIGH intensity = red (alarming), low = green (mild) — opposite of confidence use.
         colors = [1.0 - norm(min(y, norm.vmax)) for y in ys]
         ax.scatter(xs, ys, s=sizes, c=colors, cmap=CONF_CMAP, vmin=0, vmax=1,
@@ -392,10 +399,15 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
                             va="bottom", xytext=(0, 6), textcoords="offset points")
 
     ax.set_xlim(0, xmax)
-    ax.set_ylim(-0.3, max(2.5, (max(e.activity for e in events) * 1.1) if events else 2.5))
-    ax.set(title="Movement timeline — each dot = a movement (small/large). "
+    # Log axis: floor a touch below the still threshold, top a bit above the biggest event.
+    ax.set_ylim(MOVEMENT_THRESHOLD * 0.8,
+                max(3.0, (max(e.activity for e in events) * 1.4) if events else 3.0))
+    ax.set(title="Movement timeline — each dot = a movement (log scale). "
                  "A dot = NOT deep sleep here.",
-           xlabel="minutes", ylabel="intensity")
+           xlabel="minutes",
+           # Honest about the unit: it's a relative actigraphy index (integrated jerk over the
+           # window), not a physical unit. Useful for ORDERING movements, not as an absolute number.
+           ylabel="movement intensity\n(activity index, log)")
     if "on_surface" in df.columns and not df["on_surface"].all():
         ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
     fig.tight_layout()
