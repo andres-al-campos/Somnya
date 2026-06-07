@@ -438,9 +438,13 @@ def plot_rest_band(df: pd.DataFrame, out_path):
     significant = [e for e in events if e.large or e.repositioned]
     minor = [e for e in events if not (e.large or e.repositioned)]
 
-    fig, ax = plt.subplots(figsize=(11, 2.4))
+    fig, ax = plt.subplots(figsize=(11, 2.2))
 
-    # In-hand spans: not part of the rest story at all — render as a neutral gap.
+    # DESIGN: mostly-empty by default. Rest is a thin, quiet baseline RAIL (not a fat textured band) —
+    # unobtrusive, so the eye isn't fighting a wall of green. The DISRUPTIONS are the only things that
+    # rise off the rail and stand out. "Mostly calm" should LOOK mostly empty.
+
+    # In-hand spans (e.g. holding it during a nap): rail is absent there — nothing measured to rest on.
     if "on_surface" in df.columns and not df["on_surface"].all():
         inhand = ~df["on_surface"].to_numpy()
         m = df["minutes"].to_numpy()
@@ -451,42 +455,54 @@ def plot_rest_band(df: pd.DataFrame, out_path):
                 j = i
                 while j + 1 < len(inhand) and inhand[j + 1]:
                     j += 1
-                ax.axvspan(m[i], m[j] + wmin, color="lightgray", alpha=0.5,
-                           label="in-hand" if not labelled else None)
+                ax.axvspan(m[i], m[j] + wmin, color="#eeeeee", alpha=0.8, zorder=0,
+                           label="phone in hand" if not labelled else None)
                 labelled = True
                 i = j + 1
             else:
                 i += 1
 
-    # The REST BAND: one continuous calm band across on-bed time = the positive default. We carve
-    # NOTCHES out of it at significant disruptions (the band thins/dips), so the eye sees rest broken,
-    # not movement asserted. Trivial stirs leave the band intact (just faint texture marks).
-    if "accel_activity_count" in surf.columns and len(surf):
-        sm = surf["minutes"].to_numpy()
-        act = surf["accel_activity_count"].to_numpy()
-        # Band height = how "settled" each window is: full where still, dips toward 0 at big movement.
-        # Map activity → settledness in [0,1]: 1 when still, →0 as it approaches a large movement.
-        from . import CONF_CMAP  # noqa: F401 (kept for palette consistency if needed later)
-        settled = np.clip(1.0 - (act - MOVEMENT_THRESHOLD) / (LARGE_MOVEMENT_THRESHOLD * 1.5), 0.0, 1.0)
-        settled[act < MOVEMENT_THRESHOLD] = 1.0  # fully settled when still
-        # Draw as a filled band centered on y=0, height ∝ settledness. Green = restful.
-        ax.fill_between(sm, -settled, settled, color="#27ae60", alpha=0.75, linewidth=0,
-                        step="mid", label="undisturbed rest")
+    # The REST RAIL: a single calm horizontal line across on-bed time = "you were resting here".
+    # Thin and quiet on purpose. Drawn only where the phone was on the bed.
+    if "on_surface" in df.columns and len(df):
+        m = df["minutes"].to_numpy()
+        on = df["on_surface"].to_numpy()
+        # Draw contiguous on-surface segments as the rail (breaks where in-hand).
+        i = 0
+        labelled = False
+        while i < len(on):
+            if on[i]:
+                j = i
+                while j + 1 < len(on) and on[j + 1]:
+                    j += 1
+                ax.plot([m[i], m[j] + wmin], [0, 0], color="#27ae60", lw=3, solid_capstyle="round",
+                        alpha=0.85, zorder=2, label="resting" if not labelled else None)
+                labelled = True
+                i = j + 1
+            else:
+                i += 1
+    else:
+        ax.plot([0, xmax], [0, 0], color="#27ae60", lw=3, alpha=0.85, zorder=2, label="resting")
 
-    # Significant disruptions only: a clear vertical mark where real breaks happened.
+    # SIGNIFICANT disruptions: bold spikes rising off the rail, height ∝ intensity. These are the ink.
+    sig_acts = [e.activity for e in significant] or [1.0]
+    amax = max(sig_acts)
     for e in significant:
-        ax.axvline(e.minute, color="#e74c3c", lw=2.0, alpha=0.85, zorder=4)
+        h = 0.4 + 0.6 * (e.activity / amax)        # taller = bigger movement
+        ax.plot([e.minute, e.minute], [0, h], color="#e74c3c", lw=2.5, zorder=4,
+                solid_capstyle="round")
         mark = "↻" if e.repositioned else "▼"
-        ax.annotate(mark, (e.minute, 1.0), color="#e74c3c", fontsize=11, ha="center",
-                    va="bottom", xytext=(0, 2), textcoords="offset points", zorder=5)
-    # Minor stirs: faint texture only — present if you look, never alarming.
+        ax.annotate(mark, (e.minute, h), color="#e74c3c", fontsize=12, ha="center",
+                    va="bottom", xytext=(0, 1), textcoords="offset points", zorder=5)
+    # MINOR stirs: tiny faint nicks on the rail — present if you look closely, never competing.
     for e in minor:
-        ax.plot([e.minute], [0.0], marker="|", color="#1f6f43", alpha=0.35,
-                markersize=8, zorder=3)
+        ax.plot([e.minute, e.minute], [0, 0.12], color="#7f8c8d", lw=1.0, alpha=0.45, zorder=3)
 
     ax.set_xlim(0, xmax)
-    ax.set_ylim(-1.25, 1.45)
+    ax.set_ylim(-0.25, 1.35)
     ax.set_yticks([])
+    for spine in ("left", "right", "top"):
+        ax.spines[spine].set_visible(False)
     n_sig = len(significant)
     sig_word = "disruption" if n_sig == 1 else "disruptions"
     # EARN the headline from the data — never assume "mostly undisturbed". Judge by TWO absolute
@@ -514,14 +530,14 @@ def plot_rest_band(df: pd.DataFrame, out_path):
                  f"{n_sig} significant {sig_word}",
            xlabel="minutes")
     # The defusing caption — sets the frame BEFORE the user can catastrophize about minor stirs.
-    ax.text(0.5, -0.42,
+    ax.text(0.5, -0.55,
             "Some movement is normal — even in good sleep. What matters is how often rest is broken "
             "(▼ = significant, ↻ = repositioned). Small stirs aren't shown as events.",
             transform=ax.transAxes, ha="center", va="top", fontsize=7.5, color="#555")
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(loc="lower right", fontsize=8, framealpha=0.6)
-    fig.subplots_adjust(bottom=0.32)
+        ax.legend(loc="upper right", fontsize=8, framealpha=0.6, ncol=len(handles))
+    fig.subplots_adjust(bottom=0.34)
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
     return out_path
