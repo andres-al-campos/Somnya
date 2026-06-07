@@ -47,6 +47,13 @@ final class MotionCapture {
     /// Called with each decimated (10 Hz) sample. Set by the aggregator.
     var onSample: ((MotionSample) -> Void)?
 
+    /// Called with EVERY raw 50 Hz sample (timestamp, accel magnitude, gyro magnitude) — the dense
+    /// stream the BCG/breathing envelope is built from. Separate from `onSample` because the
+    /// movement features only need 10 Hz, but the heartbeat envelope needs the full rate: an 8 Hz
+    /// (let alone 10 Hz) grid is too coarse to resolve beat-to-beat timing for HRV. Kept as raw
+    /// magnitudes (not full MotionSample) to stay cheap at 50 Hz.
+    var onRawMagnitude: ((_ timestamp: Date, _ accelMag: Double, _ gyroMag: Double) -> Void)?
+
     /// True once we've asked CoreMotion to start AND it's available. This is the honest
     /// "is it running" signal — `isDeviceMotionActive` reads false in the instant right after
     /// start(), so we don't rely on it for the guardrail.
@@ -88,7 +95,18 @@ final class MotionCapture {
             }
 
             self.rawCount += 1
-            // Decimate: keep every 5th sample (50 Hz → 10 Hz).
+
+            // Dense envelope path: emit the raw 50 Hz accel + gyro magnitude on EVERY sample,
+            // before decimation. This is what the heartbeat/breathing envelope is built from.
+            if let onRaw = self.onRawMagnitude {
+                let ua = motion.userAcceleration
+                let rr = motion.rotationRate
+                let accelMag = sqrt(ua.x * ua.x + ua.y * ua.y + ua.z * ua.z)
+                let gyroMag = sqrt(rr.x * rr.x + rr.y * rr.y + rr.z * rr.z)
+                onRaw(Date(), accelMag, gyroMag)
+            }
+
+            // Decimate: keep every 5th sample (50 Hz → 10 Hz) for the movement feature path.
             guard self.rawCount % self.decimationFactor == 0 else { return }
 
             let sample = MotionSample(

@@ -60,11 +60,24 @@ enum SomnyaConfig {
     // MARK: - Accelerometer breathing (phone-on-mattress)
 
     /// Rate (Hz) at which the accelerometer magnitude envelope is captured per window, so the same
-    /// envelope→autocorrelation breathing estimator can run on bed motion (ballistocardiography-
-    /// style) — a silent, emission-free alternative to the mic when the phone rests on the mattress.
-    /// Breathing peaks at 0.5 Hz, so 8 Hz is 16x oversampled — ample margin — while also leaving
-    /// headroom for the faster heartbeat jolt (~1-2 Hz) if we ever chase that. Storage is ~2x the
-    /// audio envelope, negligible against the audio data already stored. "Capture dense, re-slice
-    /// forever" — same philosophy as the audio envelope and Mel bands.
-    static let accelEnvelopeHz: Double = 8
+    /// envelope→autocorrelation estimator can run on bed motion (ballistocardiography) — a silent,
+    /// emission-free alternative to the mic when the phone rests on the mattress.
+    ///
+    /// RAISED 8 → 32 Hz (June 2026) after 8 Hz BCG first cleared the heartbeat trust bar on a real
+    /// 5-hour night (69 bpm, 33 windows ≥ 0.40 conf, stable across window sizes). Two reasons to go
+    /// finer:
+    ///   1. RATE accuracy — at 8 Hz the autocorrelation lag grid is coarse in the 40-120 bpm band,
+    ///      so the rate quantizes (the std≈20 bpm scatter we saw). 32 Hz sharpens the peak.
+    ///   2. HRV — the real "how restful was your sleep" signal is beat-to-beat interval VARIATION,
+    ///      ~20-50 ms differences. At 8 Hz each sample is 125 ms apart — you literally cannot
+    ///      resolve a 30 ms change on a 125 ms grid. 32 Hz gives a ~31 ms grid — finally finer than
+    ///      the variation we're trying to measure. HRV is impossible below this.
+    /// Breathing (0.5 Hz) is still wildly oversampled, so the breathing path is unaffected.
+    ///
+    /// COST: ~4x this stream's bytes (it's ~32% of the export, so the file grows toward ~20 MB/night).
+    /// Accepted deliberately: "capture dense" while validating. The raw envelopes are TRANSIENT —
+    /// the plan is to prune them after analysis + charts, archiving only the derived insights
+    /// (heart/breathing rate, confidence, stats) which are ~25x smaller (<1 MB/night). Pruning is
+    /// deferred until the SwiftUI app that owns the archive format exists.
+    static let accelEnvelopeHz: Double = 32
 }

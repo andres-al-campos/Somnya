@@ -106,6 +106,14 @@ final class SessionManager: ObservableObject {
                 if after != before { self.windowCount = after }
             }
         }
+        // Dense 50 Hz magnitude stream → the BCG/breathing envelope. Hop to main for the same
+        // SwiftData-actor reasons; this only appends to in-memory buffers (cheap at 50 Hz).
+        motion.onRawMagnitude = { [weak self] _, accelMag, gyroMag in
+            Task { @MainActor in
+                guard let self, self.currentSession != nil else { return }
+                agg.ingestRawMagnitude(accelMag: accelMag, gyroMag: gyroMag)
+            }
+        }
         // Start the audio keepalive so the app survives the screen locking. Only attempt it
         // if mic permission is granted; otherwise log honestly and proceed motion-only
         // (foreground tracking still works, it just won't survive a lock).
@@ -137,6 +145,7 @@ final class SessionManager: ObservableObject {
         // Stop capture first so the last partial window is flushed before we finalize.
         motion.stop()
         motion.onSample = nil
+        motion.onRawMagnitude = nil
         audio.stop()
         aggregator?.finalize()
         aggregator = nil
