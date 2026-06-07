@@ -338,6 +338,72 @@ def format_movement_timeline(events: list[MovementEvent]) -> str:
     return "\n".join(out)
 
 
+def plot_movement_timeline(df: pd.DataFrame, out_path):
+    """The movement timeline as a graph: one dot per discrete movement, sized + colored by intensity,
+    on a horizontal time axis. The honest counterpart to the raw activity fill — it shows discrete
+    EVENTS (not a continuous smear), excludes in-hand time, and marks repositions.
+
+    Reads as: mostly-empty baseline = stillness; scattered dots = stirs; big dots = real movement.
+    A movement dot means 'definitely not deep sleep here' — the one-way depth marker, made visible."""
+    import matplotlib.pyplot as plt
+    from . import CONF_CMAP  # reuse the project palette (low→high = red→green); here = intensity
+
+    events = movement_events(df)
+    wmin = _window_minutes(df)
+    xmax = float(df["minutes"].iloc[-1]) + wmin if len(df) else 1.0
+
+    fig, ax = plt.subplots(figsize=(11, 2.8))
+
+    # Shade in-hand time (excluded from analysis) so it's clear what we did NOT count.
+    if "on_surface" in df.columns and not df["on_surface"].all():
+        inhand = ~df["on_surface"].to_numpy()
+        m = df["minutes"].to_numpy()
+        i = 0
+        labelled = False
+        while i < len(inhand):
+            if inhand[i]:
+                j = i
+                while j + 1 < len(inhand) and inhand[j + 1]:
+                    j += 1
+                ax.axvspan(m[i], m[j] + wmin, color="gray", alpha=0.18,
+                           label="in-hand (excluded)" if not labelled else None)
+                labelled = True
+                i = j + 1
+            else:
+                i += 1
+
+    # The still baseline line at y=0 (the restful default; dots rise above it).
+    ax.axhline(0, color="#27ae60", lw=1, alpha=0.4)
+
+    if events:
+        xs = [e.minute for e in events]
+        ys = [e.activity for e in events]
+        # Size + color scale with intensity. Small = subtle, large = bold red.
+        sizes = [40 if not e.large else 160 for e in events]
+        norm = plt.Normalize(MOVEMENT_THRESHOLD, max(2.0, max(ys)))
+        # Invert so HIGH intensity = red (alarming), low = green (mild) — opposite of confidence use.
+        colors = [1.0 - norm(min(y, norm.vmax)) for y in ys]
+        ax.scatter(xs, ys, s=sizes, c=colors, cmap=CONF_CMAP, vmin=0, vmax=1,
+                   edgecolors="black", linewidths=0.5, zorder=3)
+        # Reposition markers.
+        for e in events:
+            if e.repositioned:
+                ax.annotate("↻", (e.minute, e.activity), fontsize=13, ha="center",
+                            va="bottom", xytext=(0, 6), textcoords="offset points")
+
+    ax.set_xlim(0, xmax)
+    ax.set_ylim(-0.3, max(2.5, (max(e.activity for e in events) * 1.1) if events else 2.5))
+    ax.set(title="Movement timeline — each dot = a movement (small/large). "
+                 "A dot = NOT deep sleep here.",
+           xlabel="minutes", ylabel="intensity")
+    if "on_surface" in df.columns and not df["on_surface"].all():
+        ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return out_path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compute tiered per-sleep stats for a Somnya session.")
     parser.add_argument("path", type=Path, help="path to a somnya-session-*.json")
