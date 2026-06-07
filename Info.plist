@@ -20,6 +20,8 @@
 	<string>1</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Somnya listens for breathing and ambient quiet to track your sleep. Audio is processed on-device.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Somnya reads motion, orientation, and barometric pressure to detect movement, sleep posture, and breathing/heartbeat. All processing is on-device.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

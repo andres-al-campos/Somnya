@@ -20,6 +20,27 @@ final class SessionManager: ObservableObject {
 
     init(context: ModelContext) {
         self.context = context
+        recoverOrphanedSessions()
+    }
+
+    /// A clean stop always sets `endTime`. So any session WITHOUT one at launch is a crash
+    /// leftover — it would otherwise show as "recording" forever and stack up. Close each at its
+    /// last window's time (best estimate of when capture died), or at its start if it has none.
+    private func recoverOrphanedSessions() {
+        let descriptor = FetchDescriptor<SleepSession>(
+            predicate: #Predicate { $0.endTime == nil }
+        )
+        guard let orphans = try? context.fetch(descriptor), !orphans.isEmpty else { return }
+        for s in orphans {
+            let lastWindow = s.windows.map(\.startTime).max()
+            s.endTime = lastWindow ?? s.startTime
+        }
+        do {
+            try context.save()
+            SomnyaLog.lifecycle("Recovered \(orphans.count) orphaned session(s) from a prior crash — closed them so they no longer show as recording.")
+        } catch {
+            SomnyaLog.lifecycle("FAILED to recover orphaned sessions: \(error)")
+        }
     }
 
     var isTracking: Bool { currentSession != nil }

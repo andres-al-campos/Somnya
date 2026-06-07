@@ -33,6 +33,65 @@ HEART_MIN_BPM = 40.0
 HEART_MAX_BPM = 120.0
 
 
+def classify_phone_state(df: pd.DataFrame) -> pd.DataFrame:
+    """Label each window 'on_surface' vs in-hand, from signals we already capture. A phone resting
+    on a bed has a ROCK-STEADY gravity vector (dGrav≈0 between windows) and near-zero gyro; held in
+    a hand it drifts and jitters continuously. The cleanest discriminator is gravity stability.
+    Adds boolean column `on_surface`. This auto-excludes in-hand time from breathing/heartbeat/
+    posture analysis (no eyeballing) and is the seed of automatic sleep detection."""
+    if not {"gravity_x", "gravity_y", "gravity_z"}.issubset(df.columns):
+        df["on_surface"] = True   # no gravity data → assume surface (legacy files)
+        return df
+    g = df[["gravity_x", "gravity_y", "gravity_z"]].to_numpy(dtype=float)
+    # Change in gravity vector vs the previous window (0 = perfectly still surface).
+    dgrav = np.r_[0.0, np.linalg.norm(np.diff(g, axis=0), axis=1)]
+    # Gyro energy per window (mean of the gyro envelope), if present.
+    if "gyro_envelope" in df.columns:
+        gyro_e = df["gyro_envelope"].apply(
+            lambda v: float(np.mean(v)) if isinstance(v, list) and v else 0.0).to_numpy()
+    else:
+        gyro_e = np.zeros(len(df))
+    # Thresholds chosen from real nap data: surface windows sit at dgrav<0.01, gyro<0.01.
+    on_surface = (dgrav < 0.015) & (gyro_e < 0.015)
+    # Smooth: a single noisy window inside a long still run is still "surface" (debounce).
+    s = pd.Series(on_surface)
+    on_surface = (s.rolling(3, center=True, min_periods=1).mean() >= 0.5).to_numpy()
+    df["on_surface"] = on_surface
+    df["_dgrav"] = dgrav
+    return df
+
+
+def _surface_only(df: pd.DataFrame) -> pd.DataFrame:
+    """Restrict to on-surface windows (phone resting, not in hand). Breathing/heartbeat/posture are
+    only meaningful then. Falls back to the full df if the column is absent (legacy files)."""
+    if "on_surface" in df.columns and df["on_surface"].any():
+        return df[df["on_surface"]].reset_index(drop=True)
+    return df
+
+
+def phone_state_summary(df: pd.DataFrame) -> str:
+    """Report the in-hand → on-surface handoff so it's explicit which part of the night is trusted."""
+    if "on_surface" not in df.columns:
+        return "PHONE STATE: not classified."
+    n = len(df)
+    surf = int(df["on_surface"].sum())
+    lines = [f"PHONE STATE: {surf}/{n} windows on-surface ({100*surf/n:.0f}%)."]
+    # Find the first sustained on-surface run (the "set it down" moment).
+    runs = df["on_surface"].to_numpy()
+    handoff = None
+    for i in range(len(runs) - 6):
+        if runs[i:i + 6].all():   # 6 windows = 3 min of continuous surface
+            handoff = i
+            break
+    if handoff is not None:
+        t = df["minutes"].iloc[handoff]
+        lines.append(f"  Set down ~min {t:.0f} (first sustained on-surface run). Earlier = in-hand, "
+                     "excluded from breathing/heartbeat/posture.")
+    else:
+        lines.append("  No sustained on-surface period found — was the phone held the whole time?")
+    return "\n".join(lines)
+
+
 def load(path: Path) -> pd.DataFrame:
     """Load a session as a per-window DataFrame. Accepts the new single JSON export (preferred —
     carries envelope, filtered_envelope, mel_bands, and config inline) or the legacy feature CSV."""
@@ -50,6 +109,7 @@ def load(path: Path) -> pd.DataFrame:
     for src, dst in aliases.items():
         if src in df.columns and dst not in df.columns:
             df[dst] = df[src]
+    df = classify_phone_state(df)
     return df
 
 
@@ -193,6 +253,7 @@ def accel_breathing(df: pd.DataFrame) -> str:
         return ("ACCEL BREATHING: no accel_envelope in this file — it predates the dense-accel\n"
                 "  capture. Re-export after a phone-on-mattress night on the new build to test this.")
     hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
+    df = _surface_only(df)   # only meaningful when the phone is resting, not held
     chunks = [np.asarray(v, dtype=float) for v in df["accel_envelope"]
               if isinstance(v, list) and v]
     if not chunks:
@@ -257,6 +318,7 @@ def posture_summary(df: pd.DataFrame) -> str:
     if not need.issubset(df.columns):
         return ("POSTURE: no gravity vector in this file — re-export after a night on the build with\n"
                 "  gyro/gravity capture to see which side you slept on.")
+    df = _surface_only(df)   # posture = body posture only once the phone is resting on the bed
     gx = df["gravity_x"].to_numpy(dtype=float)
     gy = df["gravity_y"].to_numpy(dtype=float)
     gz = df["gravity_z"].to_numpy(dtype=float)
@@ -342,6 +404,7 @@ def heartbeat_detect(df: pd.DataFrame) -> str:
         return ("HEARTBEAT (accel BCG): no accel_envelope in this file — re-export after a\n"
                 "  phone-on-mattress night on the new build to test this.")
     hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
+    df = _surface_only(df)   # heartbeat only meaningful when the phone is resting, not held
     chunks = [np.asarray(v, dtype=float) for v in df["accel_envelope"]
               if isinstance(v, list) and v]
     if not chunks:
@@ -490,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Loaded {len(df)} windows from {args.path.name}")
     print(f"Duration: {df['minutes'].iloc[-1]:.1f} min\n")
+    print(phone_state_summary(df), "\n")
     print(audio_sanity(df), "\n")
     print(breathing_summary(df), "\n")
     print(confidence_sweep(df), "\n")
