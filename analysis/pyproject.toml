@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 somnya-analyze = "somnya_analyze:main"
+somnya-stats = "somnya_analyze.stats:main"
 
 [build-system]
 requires = ["hatchling"]
