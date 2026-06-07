@@ -494,6 +494,51 @@ def breathing_summary(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+# Somnya's confidence colormap: blue (unsure) → green → yellow → red (confident). Position encodes
+# the value; color temperature encodes how much to trust it. The reference for the native SwiftUI
+# chart later. (Prototype intentionally avoids the red-white-blue diverging map.)
+from matplotlib.colors import LinearSegmentedColormap as _LSC
+CONF_CMAP = _LSC.from_list("somnya_conf", ["#2c6fbb", "#27ae60", "#f1c40f", "#e74c3c"])
+
+
+def plot_value_with_confidence(ax, minutes, values, conf, *, conf_lo=0.15, conf_hi=0.55,
+                               window_min=0.5, gap_factor=1.2):
+    """Plot a value-over-time series where COLOR = confidence and the line BREAKS at data gaps.
+
+    Honesty rules baked in:
+    - The line only connects truly-consecutive windows (gap > window*gap_factor → break), so a long
+      flat segment can never fake 'steady value' across windows we never measured. Absence shows as
+      absence.
+    - Isolated detections (no consecutive neighbor) render as standalone dots — a real-but-unconfirmed
+      reading, honestly shown rather than strung into a fake line.
+    - Color = confidence (blue→red); alpha also scales with confidence so low-conf points recede and
+      the eye is drawn to where we're actually sure."""
+    from matplotlib.collections import LineCollection
+    x = np.asarray(minutes, dtype=float)
+    y = np.asarray(values, dtype=float)
+    c = np.asarray(conf, dtype=float)
+    norm = plt.Normalize(conf_lo, conf_hi)
+    gap = window_min * gap_factor
+
+    # Segments only between consecutive windows.
+    segs, segc = [], []
+    for i in range(len(x) - 1):
+        if x[i + 1] - x[i] <= gap:
+            segs.append([[x[i], y[i]], [x[i + 1], y[i + 1]]])
+            segc.append(c[i])
+    if segs:
+        lc = LineCollection(segs, cmap=CONF_CMAP, norm=norm, linewidth=2.6)
+        lc.set_array(np.asarray(segc))
+        ax.add_collection(lc)
+    # Points (all of them), alpha by confidence.
+    for xi, yi, ci in zip(x, y, c):
+        ax.scatter(xi, yi, c=[ci], cmap=CONF_CMAP, norm=norm,
+                   s=26, alpha=max(0.15, min(1.0, ci / conf_hi)), zorder=3)
+    # A mappable for the colorbar.
+    sm = plt.cm.ScalarMappable(cmap=CONF_CMAP, norm=norm); sm.set_array([])
+    return sm
+
+
 def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -517,17 +562,22 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
         p = out_dir / "audio_rms_vs_floor.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
-    # 3. Breathing rate timeline (gaps = nil windows).
-    br_df = df.dropna(subset=["breathing_rate_bpm"])
-    if not br_df.empty:
-        fig, ax = plt.subplots(figsize=(10, 3.2))
-        ax.plot(br_df["minutes"], br_df["breathing_rate_bpm"],
-                color="crimson", marker="o", ms=4)
-        ax.axhspan(BREATHING_MIN_BPM, BREATHING_MAX_BPM, color="green", alpha=0.07,
-                   label="physiological band")
-        ax.set(title="Breathing rate estimates (unstable = noise)",
-               xlabel="minutes", ylabel="brpm")
-        ax.legend()
+    # 3. Breathing rate — value=position, color=confidence, line breaks at data gaps. The honest
+    #    version: a long flat line can't fake "steady" across windows we never measured.
+    br_df = df.dropna(subset=["breathing_rate_bpm"]).copy()
+    if "breathing_confidence" in br_df.columns:
+        br_df = br_df.dropna(subset=["breathing_confidence"])
+    if not br_df.empty and "breathing_confidence" in br_df.columns:
+        win_min = float(df.attrs.get("config", {}).get("window_seconds", 30)) / 60.0
+        fig, ax = plt.subplots(figsize=(10, 3.4))
+        ax.axhspan(BREATHING_MIN_BPM, BREATHING_MAX_BPM, color="gray", alpha=0.05)
+        sm = plot_value_with_confidence(
+            ax, br_df["minutes"].to_numpy(), br_df["breathing_rate_bpm"].to_numpy(),
+            br_df["breathing_confidence"].to_numpy(), window_min=win_min)
+        fig.colorbar(sm, ax=ax, label="confidence", pad=0.01)
+        ax.set(title="Breathing rate — color = confidence, gaps = no trustworthy reading",
+               xlabel="minutes", ylabel="brpm", ylim=(0, 32))
+        ax.set_xlim(df["minutes"].min(), df["minutes"].max())
         p = out_dir / "breathing.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
