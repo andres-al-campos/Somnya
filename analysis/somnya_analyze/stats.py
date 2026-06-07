@@ -62,8 +62,30 @@ class Stat:
         return line
 
 
+@dataclass
+class MovementEvent:
+    """One discrete movement detected during the night. MEASURED — the highest-confidence thing the
+    app produces: activity/jerk/rms all spike together (corr ≈ 0.97) far above the still baseline, so
+    THAT a movement happened and WHEN is unambiguous. `large` is an intensity split (small = sheets/
+    twitch, large = roll/reposition/sit-up), not a semantic claim about what the movement WAS."""
+    minute: float
+    activity: float
+    large: bool
+    repositioned: bool = False   # gravity vector flipped here → body orientation actually changed
+
+    def render(self) -> str:
+        dot = "●" if self.large else "•"
+        kind = "large" if self.large else "small"
+        repo = "  ↻ reposition (orientation changed)" if self.repositioned else ""
+        return f"  {dot} min {self.minute:6.0f}  activity={self.activity:5.2f}  [{kind}]{repo}"
+
+
 # Bars (mirror SomnyaConfig + STATS_SPEC).
-MOVEMENT_THRESHOLD = 0.6        # SomnyaConfig.movementThreshold
+MOVEMENT_THRESHOLD = 0.6        # SomnyaConfig.movementThreshold — still vs moved
+LARGE_MOVEMENT_THRESHOLD = 1.5  # small (sheets/twitch) vs large (roll/reposition/sit-up).
+                                # Natural valley in real data: small movements cluster 0.6-1.3,
+                                # then a clear gap to the big ones (2.3, 2.6, 9, 10.6). Intensity
+                                # only — NOT a semantic "roll-over" claim (that needs gravity flip).
 BREATHING_KEEP_CONF = 0.30      # SomnyaConfig.breathingMinConfidence
 HEARTBEAT_TRUST_BAR = 0.40      # STATS_SPEC heartbeat trust bar
 MIN_CONFIDENT_FOR_REGULARITY = 6  # need enough confident windows for a std to mean anything
@@ -80,6 +102,47 @@ def _classify_posture(gx, gy, gz) -> str:
     if ax >= ay:
         return "left-side" if gx > 0 else "right-side"
     return "head-up" if gy < 0 else "head-down"
+
+
+def movement_events(df: pd.DataFrame, gravity_flip: float = 0.15) -> list[MovementEvent]:
+    """Discrete movement events for the timeline (dots). Consecutive moved windows collapse into one
+    event (a roll spanning two windows is one movement), tagged with peak intensity and a reposition
+    flag when the gravity vector flipped across it.
+
+    MEASURED tier: the cleanest signal the app has. We assert THAT and WHEN, and a small/large
+    intensity split — never a guess at the movement's meaning."""
+    surf = _surface_only(df)
+    if "accel_activity_count" not in surf.columns or not len(surf):
+        return []
+    act = surf["accel_activity_count"].to_numpy(dtype=float)
+    mins = surf["minutes"].to_numpy(dtype=float)
+    moved = act >= MOVEMENT_THRESHOLD
+    has_grav = {"gravity_x", "gravity_y", "gravity_z"}.issubset(surf.columns)
+    if has_grav:
+        g = surf[["gravity_x", "gravity_y", "gravity_z"]].to_numpy(dtype=float)
+
+    events: list[MovementEvent] = []
+    i = 0
+    n = len(act)
+    while i < n:
+        if not moved[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and moved[j + 1]:
+            j += 1
+        # Event spans windows [i, j]. Peak activity = its intensity.
+        peak_idx = i + int(np.argmax(act[i:j + 1]))
+        peak = float(act[peak_idx])
+        # Reposition: gravity vector before the event vs after it moved appreciably.
+        repositioned = False
+        if has_grav and i > 0 and j + 1 < n:
+            repositioned = float(np.linalg.norm(g[j + 1] - g[i - 1])) > gravity_flip
+        events.append(MovementEvent(
+            minute=float(mins[peak_idx]), activity=peak,
+            large=peak >= LARGE_MOVEMENT_THRESHOLD, repositioned=repositioned))
+        i = j + 1
+    return events
 
 
 def compute_sleep_stats(df: pd.DataFrame) -> list[Stat]:
@@ -128,10 +191,15 @@ def compute_sleep_stats(df: pd.DataFrame) -> list[Stat]:
         stats.append(Stat("longest_still_min", "Longest still stretch", Tier.MEASURED,
                           longest * wmin, "min",
                           detail="unbroken low-movement run"))
-        # Stirs = low→high crossings of the threshold (movement events).
-        stirs = int(np.sum((~still[1:]) & (still[:-1])))
-        stats.append(Stat("stir_count", "Movement events", Tier.MEASURED, stirs, "",
-                          detail="times you stirred out of stillness"))
+        # Discrete movement events, split by intensity (small = sheets/twitch, large = roll/sit-up).
+        events = movement_events(df)
+        n_large = sum(1 for e in events if e.large)
+        n_small = len(events) - n_large
+        n_repo = sum(1 for e in events if e.repositioned)
+        stats.append(Stat("movement_events", "Movements detected", Tier.MEASURED, len(events), "",
+                          detail=f"{n_small} small, {n_large} large"
+                                 + (f"; {n_repo} repositioned (orientation changed)" if n_repo else "")
+                                 + " — see timeline"))
 
     # ---- MEASURED: posture -------------------------------------------------------------------
     if {"gravity_x", "gravity_y", "gravity_z"}.issubset(surf.columns) and len(surf):
@@ -152,6 +220,17 @@ def compute_sleep_stats(df: pd.DataFrame) -> list[Stat]:
         stats.append(Stat("pressure_drift_kpa", "Pressure drift", Tier.MEASURED,
                           float(p[-1] - p[0]), "kPa",
                           detail="context only (weather/altitude)"))
+
+    # ---- MEASURED: disturbed time (the honest ONE-WAY depth inference) -----------------------
+    # Movement rules deep sleep OUT at that moment (deep sleep requires stillness). The reverse is
+    # NOT true — stillness ≠ deep. So this is a confident NEGATIVE marker only: "not deep here",
+    # never "deep here". Counts windows with any movement; that's time we KNOW wasn't restful.
+    if "accel_activity_count" in surf.columns and len(surf):
+        moved_windows = int((surf["accel_activity_count"] >= MOVEMENT_THRESHOLD).sum())
+        stats.append(Stat("disturbed_min", "Disturbed time", Tier.MEASURED,
+                          moved_windows * wmin, "min",
+                          detail="movement → definitely NOT deep sleep here "
+                                 "(one-way: stillness can't prove the reverse)"))
 
     # ---- ESTIMATED: breathing ----------------------------------------------------------------
     stats.extend(_breathing_stats(surf))
@@ -251,6 +330,14 @@ def format_stats(stats: list[Stat]) -> str:
     return "\n".join(out)
 
 
+def format_movement_timeline(events: list[MovementEvent]) -> str:
+    if not events:
+        return "MOVEMENT TIMELINE: no movements detected (phone never registered motion on-bed)."
+    out = ["MOVEMENT TIMELINE (• small  ● large  ↻ reposition — the highest-confidence signal):"]
+    out.extend(e.render() for e in events)
+    return "\n".join(out)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compute tiered per-sleep stats for a Somnya session.")
     parser.add_argument("path", type=Path, help="path to a somnya-session-*.json")
@@ -264,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Loaded {len(df)} windows from {args.path.name} "
           f"({df['minutes'].iloc[-1]:.0f} min)\n")
     print(format_stats(compute_sleep_stats(df)))
+    print()
+    print(format_movement_timeline(movement_events(df)))
     return 0
 
 

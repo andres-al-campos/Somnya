@@ -43,9 +43,10 @@ All inputs are real fields in the JSON export (verified against
 | `in_hand_min` / `on_surface_min` | `on_surface` | count×W of each, in minutes | the trusted analysis window is on-surface only |
 | `still_pct` | `accel_activity_count` | % of **surface** windows with `activity < movementThreshold (0.6)` | the calibrated still test |
 | `longest_still_min` | `immobility_run_length` (new exports) **or** recomputed from `activity` | max run × W, in minutes | fixed-threshold bug now resolved; recompute for legacy files |
-| `stir_count` | `accel_activity_count` | # of low→high crossings of `movementThreshold` over surface windows | a "movement event" / restlessness proxy |
+| `movement_events` | `accel_activity_count` (+ `gravity_*`) | consecutive moved windows (`activity ≥ 0.6`) collapse into one event at peak intensity; split small/large at `1.5`; flag `repositioned` if gravity vector moved > 0.15 across it | **The single highest-confidence signal in the app** — activity/jerk/rms corr ≈ 0.97, events spike 3-30× over baseline. Powers the timeline (• small ● large ↻ reposition). Intensity is MEASURED; the *semantic* "roll-over" label is only ESTIMATED via the gravity flip, calibrated once a night with real position changes exists. |
+| `disturbed_min` | `accel_activity_count` | count of moved windows × W | The honest ONE-WAY depth inference: movement rules deep sleep OUT here, but stillness can NOT rule it in. A confident NEGATIVE depth marker only. |
 | `posture_dist` | `gravity_x/y/z` | classify each surface window → {screen-up, face-down, left, right, head-up/down}; % each | heuristic; phone orientation, calibrate to body later |
-| `position_changes` | posture labels | # of label flips across surface windows | restlessness proxy (independent of stir_count) |
+| `position_changes` | posture labels | # of label flips across surface windows | restlessness proxy (independent of movement_events) |
 | `pressure_drift_kpa` | `pressure_kpa` | `last - first` | context only (weather/altitude); steady fall ~ worse weather |
 
 ### ESTIMATED — periodic signals with a confidence number
