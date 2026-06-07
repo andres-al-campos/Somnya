@@ -416,6 +416,117 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
     return out_path
 
 
+def plot_rest_band(df: pd.DataFrame, out_path):
+    """The PRIMARY movement view: restful sleep as the positive element, not movement as alarm.
+
+    Why this and not the dot scatter: a dot-per-movement chart over-weights FREQUENCY and makes
+    normal sleep look terrible — everyone shifts/twitches dozens of times even in good sleep, and the
+    raw count does NOT predict felt rest (fragmentation does — see somnya_accuracy_research). So we
+    INVERT figure and ground: draw rest as a continuous calm band (the good thing, made visible) and
+    show movement only where it BREAKS that rest. Trivial stirs become faint texture; only
+    significant disruptions (large movements / repositions) earn a distinct mark. The eye then reads
+    'mostly one long calm night with a couple of breaks' — the correct emotional read.
+
+    Honesty preserved: a break still means 'not deep sleep there' (one-way). We never paint the calm
+    band as PROVEN deep sleep — it's 'undisturbed', which is what we actually measured."""
+    import matplotlib.pyplot as plt
+
+    wmin = _window_minutes(df)
+    xmax = float(df["minutes"].iloc[-1]) + wmin if len(df) else 1.0
+    surf = _surface_only(df)
+    events = movement_events(df)
+    significant = [e for e in events if e.large or e.repositioned]
+    minor = [e for e in events if not (e.large or e.repositioned)]
+
+    fig, ax = plt.subplots(figsize=(11, 2.4))
+
+    # In-hand spans: not part of the rest story at all — render as a neutral gap.
+    if "on_surface" in df.columns and not df["on_surface"].all():
+        inhand = ~df["on_surface"].to_numpy()
+        m = df["minutes"].to_numpy()
+        i = 0
+        labelled = False
+        while i < len(inhand):
+            if inhand[i]:
+                j = i
+                while j + 1 < len(inhand) and inhand[j + 1]:
+                    j += 1
+                ax.axvspan(m[i], m[j] + wmin, color="lightgray", alpha=0.5,
+                           label="in-hand" if not labelled else None)
+                labelled = True
+                i = j + 1
+            else:
+                i += 1
+
+    # The REST BAND: one continuous calm band across on-bed time = the positive default. We carve
+    # NOTCHES out of it at significant disruptions (the band thins/dips), so the eye sees rest broken,
+    # not movement asserted. Trivial stirs leave the band intact (just faint texture marks).
+    if "accel_activity_count" in surf.columns and len(surf):
+        sm = surf["minutes"].to_numpy()
+        act = surf["accel_activity_count"].to_numpy()
+        # Band height = how "settled" each window is: full where still, dips toward 0 at big movement.
+        # Map activity → settledness in [0,1]: 1 when still, →0 as it approaches a large movement.
+        from . import CONF_CMAP  # noqa: F401 (kept for palette consistency if needed later)
+        settled = np.clip(1.0 - (act - MOVEMENT_THRESHOLD) / (LARGE_MOVEMENT_THRESHOLD * 1.5), 0.0, 1.0)
+        settled[act < MOVEMENT_THRESHOLD] = 1.0  # fully settled when still
+        # Draw as a filled band centered on y=0, height ∝ settledness. Green = restful.
+        ax.fill_between(sm, -settled, settled, color="#27ae60", alpha=0.75, linewidth=0,
+                        step="mid", label="undisturbed rest")
+
+    # Significant disruptions only: a clear vertical mark where real breaks happened.
+    for e in significant:
+        ax.axvline(e.minute, color="#e74c3c", lw=2.0, alpha=0.85, zorder=4)
+        mark = "↻" if e.repositioned else "▼"
+        ax.annotate(mark, (e.minute, 1.0), color="#e74c3c", fontsize=11, ha="center",
+                    va="bottom", xytext=(0, 2), textcoords="offset points", zorder=5)
+    # Minor stirs: faint texture only — present if you look, never alarming.
+    for e in minor:
+        ax.plot([e.minute], [0.0], marker="|", color="#1f6f43", alpha=0.35,
+                markersize=8, zorder=3)
+
+    ax.set_xlim(0, xmax)
+    ax.set_ylim(-1.25, 1.45)
+    ax.set_yticks([])
+    n_sig = len(significant)
+    sig_word = "disruption" if n_sig == 1 else "disruptions"
+    # EARN the headline from the data — never assume "mostly undisturbed". Judge by TWO absolute
+    # fragmentation signals (not fraction-of-night, which unfairly penalizes longer nights): the
+    # longest unbroken still stretch in MINUTES (a ~50min block is good regardless of total length),
+    # and the SIGNIFICANT-disruption density per hour. A genuinely broken night must read broken.
+    longest_still_min = 0.0
+    on_bed_min = max(1.0, len(surf) * wmin)
+    if "accel_activity_count" in surf.columns and len(surf):
+        still_mask = (surf["accel_activity_count"] < MOVEMENT_THRESHOLD).to_numpy()
+        run = best = 0
+        for s in still_mask:
+            run = run + 1 if s else 0
+            best = max(best, run)
+        longest_still_min = best * wmin
+    sig_per_hr = n_sig / (on_bed_min / 60.0)
+    # Calm = a long unbroken block AND few significant breaks per hour. Both must hold.
+    if longest_still_min >= 30 and sig_per_hr <= 1.0:
+        mood = "Mostly undisturbed rest"
+    elif longest_still_min >= 15 and sig_per_hr <= 2.5:
+        mood = "Rest in good stretches"
+    else:
+        mood = "Restless — rest kept breaking up"
+    ax.set(title=f"Your night: {mood} · longest unbroken rest {longest_still_min:.0f} min · "
+                 f"{n_sig} significant {sig_word}",
+           xlabel="minutes")
+    # The defusing caption — sets the frame BEFORE the user can catastrophize about minor stirs.
+    ax.text(0.5, -0.42,
+            "Some movement is normal — even in good sleep. What matters is how often rest is broken "
+            "(▼ = significant, ↻ = repositioned). Small stirs aren't shown as events.",
+            transform=ax.transAxes, ha="center", va="top", fontsize=7.5, color="#555")
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc="lower right", fontsize=8, framealpha=0.6)
+    fig.subplots_adjust(bottom=0.32)
+    fig.savefig(out_path, dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compute tiered per-sleep stats for a Somnya session.")
     parser.add_argument("path", type=Path, help="path to a somnya-session-*.json")

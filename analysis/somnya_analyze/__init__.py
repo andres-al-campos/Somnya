@@ -585,9 +585,11 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
         p = out_dir / "breathing.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
-    # 4. Movement timeline — discrete events (the highest-confidence signal). Imported lazily to
-    #    avoid a circular import (stats imports from this module).
-    from .stats import plot_movement_timeline
+    # 4. Movement — two views (lazy import avoids a circular import; stats imports from this module):
+    #    (a) the PRIMARY rest-band view (rest as the positive element; only real disruptions marked),
+    #    (b) the DETAILED scatter (every discrete event) for when you want the full picture.
+    from .stats import plot_rest_band, plot_movement_timeline
+    written.append(plot_rest_band(df, out_dir / "rest_band.png"))
     written.append(plot_movement_timeline(df, out_dir / "movement_timeline.png"))
 
     return written
