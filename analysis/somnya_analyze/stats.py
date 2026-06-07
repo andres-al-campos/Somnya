@@ -354,7 +354,9 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
 
     fig, ax = plt.subplots(figsize=(11, 2.8))
 
-    # Shade in-hand time (excluded from analysis) so it's clear what we did NOT count.
+    # Shade "phone moved" time (not flat/still — could be handheld OR just bumped; we can't tell which,
+    # so we DON'T claim "in-hand"). Useful info: it flags time that wasn't settled tracking, and is a
+    # seed for future automatic sleep detection (people sometimes handle the phone after starting).
     if "on_surface" in df.columns and not df["on_surface"].all():
         inhand = ~df["on_surface"].to_numpy()
         m = df["minutes"].to_numpy()
@@ -365,180 +367,47 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
                 j = i
                 while j + 1 < len(inhand) and inhand[j + 1]:
                     j += 1
-                ax.axvspan(m[i], m[j] + wmin, color="gray", alpha=0.18,
-                           label="in-hand (excluded)" if not labelled else None)
+                ax.axvspan(m[i], m[j] + wmin, color="gray", alpha=0.15,
+                           label="phone moved" if not labelled else None)
                 labelled = True
                 i = j + 1
             else:
                 i += 1
 
-    # LOG y-axis: movement spans ~4x on-bed (and ~18x if in-hand spikes are included). On a linear
-    # axis the dense low end (most stirs sit 0.6-1.0) smears into a thin band while one big dot floats
-    # alone. Log gives the common small movements room and compresses the rare big ones — equal
-    # visual steps for equal *multiplicative* change, which is how intensity is actually perceived.
-    ax.set_yscale("log")
-    ax.axhline(MOVEMENT_THRESHOLD, color="#27ae60", lw=1, alpha=0.5, ls="--")  # the still floor
+    # Y-AXIS RESTORED: dots are placed by intensity (y) AND sized by it — redundant encoding reads at
+    # a glance. Size = EXCESS over the stillness threshold so trivial stirs become near-invisible specks
+    # and real movements dominate — nothing hidden, but the night reads mostly-empty = mostly-still.
+    ax.axhline(MOVEMENT_THRESHOLD, color="#27ae60", lw=1.2, alpha=0.5, ls="--")  # the calm floor
 
     if events:
         xs = [e.minute for e in events]
-        ys = [e.activity for e in events]
-        ymax = max(ys)
-        # Dot AREA ∝ intensity (radius ∝ √intensity) — the eye reads area as magnitude, so size by
-        # area not radius, else big values look exaggerated. matplotlib `s` IS area, so feed it
-        # ~linearly in activity (capped) for an area-proportional, perception-honest scale.
-        sizes = [30 + 90 * (y / ymax) for y in ys]
-        norm = plt.Normalize(MOVEMENT_THRESHOLD, max(2.0, ymax))
-        # Invert so HIGH intensity = red (alarming), low = green (mild) — opposite of confidence use.
-        colors = [1.0 - norm(min(y, norm.vmax)) for y in ys]
+        ys = [e.activity for e in events]               # y-position = raw intensity
+        excess = [max(0.0, y - MOVEMENT_THRESHOLD) for y in ys]
+        emax = max(excess) or 1.0
+        # AREA grows ∝ excess^1.5 so small stirs shrink hard; threshold stir ~6px, biggest ~260px.
+        sizes = [6 + 254 * (x / emax) ** 1.5 for x in excess]
+        norm = plt.Normalize(0, emax)
+        # CONF_CMAP runs red(0)→green(1); big movement should be RED, so invert.
+        colors = [1.0 - norm(x) for x in excess]
         ax.scatter(xs, ys, s=sizes, c=colors, cmap=CONF_CMAP, vmin=0, vmax=1,
-                   edgecolors="black", linewidths=0.5, zorder=3)
-        # Reposition markers.
+                   edgecolors="black", linewidths=0.4, zorder=3)
         for e in events:
             if e.repositioned:
-                ax.annotate("↻", (e.minute, e.activity), fontsize=13, ha="center",
-                            va="bottom", xytext=(0, 6), textcoords="offset points")
+                ax.annotate("↻", (e.minute, e.activity), fontsize=12, ha="center", va="bottom",
+                            xytext=(0, 8), textcoords="offset points", color="#e74c3c")
 
     ax.set_xlim(0, xmax)
-    # Log axis: floor a touch below the still threshold, top a bit above the biggest event.
-    ax.set_ylim(MOVEMENT_THRESHOLD * 0.8,
-                max(3.0, (max(e.activity for e in events) * 1.4) if events else 3.0))
-    ax.set(title="Movement timeline — each dot = a movement (log scale). "
-                 "A dot = NOT deep sleep here.",
+    ax.set_ylim(MOVEMENT_THRESHOLD * 0.7,
+                max(3.0, (max(e.activity for e in events) * 1.15) if events else 3.0))
+    ax.set(title="Movement timeline — bigger/higher dot = bigger movement. Mostly empty = mostly still.",
            xlabel="minutes",
-           # Honest about the unit: it's a relative actigraphy index (integrated jerk over the
-           # window), not a physical unit. Useful for ORDERING movements, not as an absolute number.
-           ylabel="movement intensity\n(activity index, log)")
+           # Honest about the unit: a relative actigraphy index (integrated jerk over the window),
+           # good for ORDERING movements, not a physical absolute.
+           ylabel="movement intensity\n(activity index)")
     if "on_surface" in df.columns and not df["on_surface"].all():
         ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
-    plt.close(fig)
-    return out_path
-
-
-def plot_rest_band(df: pd.DataFrame, out_path):
-    """The PRIMARY movement view: restful sleep as the positive element, not movement as alarm.
-
-    Why this and not the dot scatter: a dot-per-movement chart over-weights FREQUENCY and makes
-    normal sleep look terrible — everyone shifts/twitches dozens of times even in good sleep, and the
-    raw count does NOT predict felt rest (fragmentation does — see somnya_accuracy_research). So we
-    INVERT figure and ground: draw rest as a continuous calm band (the good thing, made visible) and
-    show movement only where it BREAKS that rest. Trivial stirs become faint texture; only
-    significant disruptions (large movements / repositions) earn a distinct mark. The eye then reads
-    'mostly one long calm night with a couple of breaks' — the correct emotional read.
-
-    Honesty preserved: a break still means 'not deep sleep there' (one-way). We never paint the calm
-    band as PROVEN deep sleep — it's 'undisturbed', which is what we actually measured."""
-    import matplotlib.pyplot as plt
-
-    wmin = _window_minutes(df)
-    xmax = float(df["minutes"].iloc[-1]) + wmin if len(df) else 1.0
-    surf = _surface_only(df)
-    events = movement_events(df)
-    significant = [e for e in events if e.large or e.repositioned]
-    minor = [e for e in events if not (e.large or e.repositioned)]
-
-    fig, ax = plt.subplots(figsize=(11, 2.2))
-
-    # DESIGN: mostly-empty by default. Rest is a thin, quiet baseline RAIL (not a fat textured band) —
-    # unobtrusive, so the eye isn't fighting a wall of green. The DISRUPTIONS are the only things that
-    # rise off the rail and stand out. "Mostly calm" should LOOK mostly empty.
-
-    # In-hand spans (e.g. holding it during a nap): rail is absent there — nothing measured to rest on.
-    if "on_surface" in df.columns and not df["on_surface"].all():
-        inhand = ~df["on_surface"].to_numpy()
-        m = df["minutes"].to_numpy()
-        i = 0
-        labelled = False
-        while i < len(inhand):
-            if inhand[i]:
-                j = i
-                while j + 1 < len(inhand) and inhand[j + 1]:
-                    j += 1
-                ax.axvspan(m[i], m[j] + wmin, color="#eeeeee", alpha=0.8, zorder=0,
-                           label="phone in hand" if not labelled else None)
-                labelled = True
-                i = j + 1
-            else:
-                i += 1
-
-    # The REST RAIL: a single calm horizontal line across on-bed time = "you were resting here".
-    # Thin and quiet on purpose. Drawn only where the phone was on the bed.
-    if "on_surface" in df.columns and len(df):
-        m = df["minutes"].to_numpy()
-        on = df["on_surface"].to_numpy()
-        # Draw contiguous on-surface segments as the rail (breaks where in-hand).
-        i = 0
-        labelled = False
-        while i < len(on):
-            if on[i]:
-                j = i
-                while j + 1 < len(on) and on[j + 1]:
-                    j += 1
-                ax.plot([m[i], m[j] + wmin], [0, 0], color="#27ae60", lw=3, solid_capstyle="round",
-                        alpha=0.85, zorder=2, label="resting" if not labelled else None)
-                labelled = True
-                i = j + 1
-            else:
-                i += 1
-    else:
-        ax.plot([0, xmax], [0, 0], color="#27ae60", lw=3, alpha=0.85, zorder=2, label="resting")
-
-    # SIGNIFICANT disruptions: bold spikes rising off the rail, height ∝ intensity. These are the ink.
-    sig_acts = [e.activity for e in significant] or [1.0]
-    amax = max(sig_acts)
-    for e in significant:
-        h = 0.4 + 0.6 * (e.activity / amax)        # taller = bigger movement
-        ax.plot([e.minute, e.minute], [0, h], color="#e74c3c", lw=2.5, zorder=4,
-                solid_capstyle="round")
-        mark = "↻" if e.repositioned else "▼"
-        ax.annotate(mark, (e.minute, h), color="#e74c3c", fontsize=12, ha="center",
-                    va="bottom", xytext=(0, 1), textcoords="offset points", zorder=5)
-    # MINOR stirs: tiny faint nicks on the rail — present if you look closely, never competing.
-    for e in minor:
-        ax.plot([e.minute, e.minute], [0, 0.12], color="#7f8c8d", lw=1.0, alpha=0.45, zorder=3)
-
-    ax.set_xlim(0, xmax)
-    ax.set_ylim(-0.25, 1.35)
-    ax.set_yticks([])
-    for spine in ("left", "right", "top"):
-        ax.spines[spine].set_visible(False)
-    n_sig = len(significant)
-    sig_word = "disruption" if n_sig == 1 else "disruptions"
-    # EARN the headline from the data — never assume "mostly undisturbed". Judge by TWO absolute
-    # fragmentation signals (not fraction-of-night, which unfairly penalizes longer nights): the
-    # longest unbroken still stretch in MINUTES (a ~50min block is good regardless of total length),
-    # and the SIGNIFICANT-disruption density per hour. A genuinely broken night must read broken.
-    longest_still_min = 0.0
-    on_bed_min = max(1.0, len(surf) * wmin)
-    if "accel_activity_count" in surf.columns and len(surf):
-        still_mask = (surf["accel_activity_count"] < MOVEMENT_THRESHOLD).to_numpy()
-        run = best = 0
-        for s in still_mask:
-            run = run + 1 if s else 0
-            best = max(best, run)
-        longest_still_min = best * wmin
-    sig_per_hr = n_sig / (on_bed_min / 60.0)
-    # Calm = a long unbroken block AND few significant breaks per hour. Both must hold.
-    if longest_still_min >= 30 and sig_per_hr <= 1.0:
-        mood = "Mostly undisturbed rest"
-    elif longest_still_min >= 15 and sig_per_hr <= 2.5:
-        mood = "Rest in good stretches"
-    else:
-        mood = "Restless — rest kept breaking up"
-    ax.set(title=f"Your night: {mood} · longest unbroken rest {longest_still_min:.0f} min · "
-                 f"{n_sig} significant {sig_word}",
-           xlabel="minutes")
-    # The defusing caption — sets the frame BEFORE the user can catastrophize about minor stirs.
-    ax.text(0.5, -0.55,
-            "Some movement is normal — even in good sleep. What matters is how often rest is broken "
-            "(▼ = significant, ↻ = repositioned). Small stirs aren't shown as events.",
-            transform=ax.transAxes, ha="center", va="top", fontsize=7.5, color="#555")
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(loc="upper right", fontsize=8, framealpha=0.6, ncol=len(handles))
-    fig.subplots_adjust(bottom=0.34)
-    fig.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
     return out_path
 
