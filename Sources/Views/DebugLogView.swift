@@ -49,6 +49,13 @@ struct DebugLogView: View {
                     Label("Sonar Tone", systemImage: "waveform")
                 }
             }
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink {
+                    CalibrationView()
+                } label: {
+                    Label("Calibrate dB", systemImage: "mic.badge.plus")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Clear") { store.clear() }
             }
