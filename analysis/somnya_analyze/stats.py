@@ -90,6 +90,13 @@ BREATHING_KEEP_CONF = 0.30      # SomnyaConfig.breathingMinConfidence
 HEARTBEAT_TRUST_BAR = 0.40      # STATS_SPEC heartbeat trust bar
 MIN_CONFIDENT_FOR_REGULARITY = 6  # need enough confident windows for a std to mean anything
 
+# Heartbeat tracker: BCG is a sharp pulse rich in harmonics, so the autocorrelation often has a peak
+# at 2x the true rate that can be TALLER than the fundamental — the detector would otherwise flip
+# between ~51 and ~95 bpm window to window. Defense: track a running HR and only accept a candidate
+# whose move is physiologically plausible for the REAL elapsed time, snapping 2x candidates to half.
+HEARTBEAT_MAX_SLEW_BPM_PER_S = 0.5   # sleeping HR changes slowly; tight = clean track, rejects spikes
+HEARTBEAT_HARMONIC_TOL = 0.12        # how close to exactly 2x counts as "a harmonic to snap down"
+
 
 def _window_minutes(df: pd.DataFrame) -> float:
     return float(df.attrs.get("config", {}).get("window_seconds", 30)) / 60.0
@@ -284,6 +291,87 @@ def _breathing_stats(surf: pd.DataFrame) -> list[Stat]:
     return out
 
 
+def _hr_all_peaks(x, hz, min_conf=0.30):
+    """Every interior local-max of the heart-band autocorrelation as (bpm, corr), strongest first.
+    The tracker needs ALL candidates (not just the tallest) so it can pick the one consistent with the
+    running HR rather than blindly taking a harmonic peak that happens to be taller this window."""
+    x = np.asarray(x, float); n = len(x); x = x - x.mean()
+    energy = float((x * x).sum())
+    if energy <= 1e-12 or n <= 4:
+        return []
+    min_lag = int((60.0 / HEART_MAX_BPM) * hz)
+    max_lag = min(n - 1, int((60.0 / HEART_MIN_BPM) * hz))
+    if max_lag - min_lag < 2 or min_lag < 1:
+        return []
+    corr = np.array([float((x[:n - lag] * x[lag:]).sum()) / energy
+                     for lag in range(min_lag, max_lag + 1)])
+    peaks = []
+    for i in range(1, len(corr) - 1):
+        if corr[i] > corr[i - 1] and corr[i] >= corr[i + 1] and corr[i] >= min_conf:
+            peaks.append((60.0 / ((min_lag + i) / hz), float(corr[i])))
+    peaks.sort(key=lambda t: -t[1])
+    return peaks
+
+
+def _heartbeat_series(df: pd.DataFrame, surf: pd.DataFrame):
+    """Slew-limited heartbeat track over the night → list of (minute, bpm, conf).
+
+    Three defenses against 2x-harmonic lock-in (the cause of the ~51-vs-~95 bimodal scatter):
+      1. Slew limit: a candidate may move the running HR by at most HEARTBEAT_MAX_SLEW_BPM_PER_S × the
+         REAL elapsed seconds since the last accepted point (gaps permit big moves, close windows don't)
+         — so a real HR rise (gradual) passes but an instant 51→95 teleport (harmonic) is rejected.
+      2. Sub-harmonic snap: a candidate ~2× the track is replaced by its half (the true fundamental).
+      3. Physiological envelope: HEART_MIN_BPM..HEART_MAX_BPM backstop for wild artifacts.
+    Returns [] (→ GUESSED) when the envelope is too slow or no confident track forms."""
+    if "accel_envelope" not in surf.columns:
+        return []
+    hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
+    if hz < HEART_MAX_BPM / 60.0 * 2:
+        return []
+    chunks, tline = [], []
+    for _, row in surf.iterrows():
+        env = row["accel_envelope"]
+        if isinstance(env, list) and env:
+            chunks.append(np.asarray(env, float))
+            tline.append(np.full(len(env), float(row["minutes"])))
+    if not chunks:
+        return []
+    stream = np.concatenate(chunks)
+    times = np.concatenate(tline)
+    band = _bandpass_bpm(stream, hz, HEART_MIN_BPM, HEART_MAX_BPM)
+    n = int(60 * hz)
+
+    out = []
+    cur = None
+    last_min = None
+    for start in range(0, len(band) - n + 1, n):
+        minute = float(times[start + n // 2])
+        peaks = _hr_all_peaks(band[start:start + n], hz)
+        cands = [(b, c) for b, c in peaks
+                 if c >= HEARTBEAT_TRUST_BAR and HEART_MIN_BPM <= b <= HEART_MAX_BPM]
+        if not cands:
+            continue
+        if cur is None:
+            # Seed on the LOWEST among the near-strongest peaks → avoid seeding on a harmonic.
+            top = cands[0][1]
+            strong = [b for b, c in cands if c >= top * 0.8]
+            cur = min(strong) if strong else cands[0][0]
+            out.append((minute, cur, cands[0][1])); last_min = minute
+            continue
+        budget = HEARTBEAT_MAX_SLEW_BPM_PER_S * max(1.0, (minute - last_min) * 60.0)
+        expanded = list(cands)
+        for b, c in cands:
+            if abs(b / cur - 2.0) < HEARTBEAT_HARMONIC_TOL * 2 and abs(b / 2 - cur) < abs(b - cur):
+                expanded.append((b / 2.0, c))  # snap a ~2x harmonic down to the fundamental
+        within = [(b, c) for b, c in expanded if abs(b - cur) <= budget]
+        if not within:
+            continue  # nothing plausible this window — coast, don't force a point
+        b, c = min(within, key=lambda t: (abs(t[0] - cur), -t[1]))
+        cur = 0.7 * cur + 0.3 * b  # gentle smoothing toward the accepted candidate
+        out.append((minute, cur, c)); last_min = minute
+    return out
+
+
 def _heartbeat_stat(df: pd.DataFrame, surf: pd.DataFrame) -> Stat:
     if "accel_envelope" not in surf.columns:
         return Stat("heartbeat_bpm", "Heart rate (BCG)", Tier.GUESSED, None,
@@ -292,27 +380,17 @@ def _heartbeat_stat(df: pd.DataFrame, surf: pd.DataFrame) -> Stat:
     if hz < HEART_MAX_BPM / 60.0 * 2:
         return Stat("heartbeat_bpm", "Heart rate (BCG)", Tier.GUESSED, None,
                     detail=f"envelope only {hz:.0f}Hz — too slow for heartbeat; raise accel_envelope_hz")
-    chunks = [np.asarray(v, dtype=float) for v in surf["accel_envelope"]
-              if isinstance(v, list) and v]
-    if not chunks:
-        return Stat("heartbeat_bpm", "Heart rate (BCG)", Tier.GUESSED, None,
-                    detail="accel envelope present but empty on-bed")
-    band = _bandpass_bpm(np.concatenate(chunks), hz, HEART_MIN_BPM, HEART_MAX_BPM)
-    n = int(60 * hz)
-    rates, confs = [], []
-    for start in range(0, len(band) - n + 1, n):
-        bpm, conf = _estimate_periodic_peak(band[start:start + n], hz,
-                                            min_bpm=HEART_MIN_BPM, max_bpm=HEART_MAX_BPM,
-                                            min_conf=0.30)
-        if bpm is not None and conf >= HEARTBEAT_TRUST_BAR:
-            rates.append(bpm)
-            confs.append(conf)
-    if rates:
+    # Slew-limited track (rejects 2x-harmonic lock-in); report its MEDIAN as the resting rate.
+    track = _heartbeat_series(df, surf)
+    if track:
+        rates = [b for _, b, _ in track]
+        confs = [c for _, _, c in track]
         return Stat("heartbeat_bpm", "Heart rate (BCG)", Tier.ESTIMATED,
-                    float(np.mean(rates)), "bpm", confidence=float(np.mean(confs)),
-                    detail=f"{len(rates)} window(s) cleared the {HEARTBEAT_TRUST_BAR:.2f} bar")
+                    float(np.median(rates)), "bpm", confidence=float(np.mean(confs)),
+                    detail=f"{len(track)} tracked window(s); harmonic-rejected median "
+                           f"(range {min(rates):.0f}-{max(rates):.0f})")
     return Stat("heartbeat_bpm", "Heart rate (BCG)", Tier.GUESSED, None,
-                detail=f"no window cleared the {HEARTBEAT_TRUST_BAR:.2f} trust bar — "
+                detail=f"no confident heartbeat track formed (trust bar {HEARTBEAT_TRUST_BAR:.2f}) — "
                        "not yet measurable on this device/mattress")
 
 
@@ -339,76 +417,56 @@ def format_movement_timeline(events: list[MovementEvent]) -> str:
 
 
 def plot_heartbeat(df: pd.DataFrame, out_path):
-    """Heart rate (accel BCG) over the night: one dot per analysis window, positioned by bpm and
-    colored by confidence — same language as the breathing chart (position = value, color = trust).
+    """Heart rate (accel BCG) over the night, as a slew-limited TRACK that rejects the 2x-harmonic.
 
-    Honest by construction: each dot is tagged with the window's ACTUAL minute (we don't concatenate
-    away the off-bed gaps), dots below the 0.40 trust bar are drawn faint+small (attempts we don't
-    trust, shown not hidden), and a band marks the confident median ± its spread. Mostly-faint =
-    'we mostly couldn't read your pulse'; a tight cloud of bright dots = a real, stable resting HR."""
+    The grey cloud is every raw candidate peak (incl. the harmonic band ~2x the true rate, the cause
+    of the old bimodal scatter). The red line is the tracker's accepted heartbeat: it follows the true
+    fundamental, only allowing physiologically plausible moves per elapsed time. Honest by
+    construction — the rejected harmonics stay VISIBLE as the grey cloud, not airbrushed; the track is
+    what we trust. Flat-ish red line = a stable resting HR; a gradual climb = a real rise (e.g. REM)."""
     import matplotlib.pyplot as plt
-    from . import CONF_CMAP, set_hours_axis
+    from . import set_hours_axis
 
     hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
     xmax = (float(df["minutes"].iloc[-1]) + _window_minutes(df)) if len(df) else 1.0
+    surf = _surface_only(df) if "on_surface" in df.columns else df
 
-    mins, rates, confs = [], [], []
-    if "accel_envelope" in df.columns and hz >= HEART_MAX_BPM / 60.0 * 2:
-        surf = _surface_only(df) if "on_surface" in df.columns else df
-        # A single 30s window (~242 samples @8Hz) is too short for a 60s heartbeat analysis window,
-        # so concatenate the on-surface envelopes (same as _heartbeat_stat) but carry a PARALLEL
-        # minute-per-sample timeline, so each 60s chunk maps back to a real wall-clock minute.
+    fig, ax = plt.subplots(figsize=(11, 3.0))
+    track = _heartbeat_series(df, surf) if hz >= HEART_MAX_BPM / 60.0 * 2 else []
+
+    if track:
+        # Grey cloud: every raw confident candidate (shows the harmonics the tracker rejected).
         chunks, tline = [], []
         for _, row in surf.iterrows():
             env = row["accel_envelope"]
             if isinstance(env, list) and env:
-                chunks.append(np.asarray(env, float))
-                tline.append(np.full(len(env), float(row["minutes"])))
-        if chunks:
-            stream = np.concatenate(chunks)
-            times = np.concatenate(tline)
-            band = _bandpass_bpm(stream, hz, HEART_MIN_BPM, HEART_MAX_BPM)
-            n = int(60 * hz)
-            for start in range(0, len(band) - n + 1, n):
-                bpm, conf = _estimate_periodic_peak(band[start:start + n], hz,
-                                                    min_bpm=HEART_MIN_BPM, max_bpm=HEART_MAX_BPM,
-                                                    min_conf=0.0)  # keep below-bar attempts for the plot
-                if bpm is not None:
-                    mins.append(float(times[start + n // 2]))  # midpoint window's real minute
-                    rates.append(bpm)
-                    confs.append(conf)
-
-    fig, ax = plt.subplots(figsize=(11, 3.0))
-    if rates:
-        mins = np.asarray(mins); rates = np.asarray(rates); confs = np.asarray(confs)
-        trusted = confs >= HEARTBEAT_TRUST_BAR
-        norm = plt.Normalize(0.15, 0.55)  # same scale as breathing chart's confidence colors
-        # faint below-bar attempts (small, low alpha) so coverage is honest, not airbrushed
-        if (~trusted).any():
-            ax.scatter(mins[~trusted], rates[~trusted], s=10, c=confs[~trusted], cmap=CONF_CMAP,
-                       norm=norm, alpha=0.35, edgecolors="none", zorder=2)
-        # trusted points: bigger, opaque, outlined
-        if trusted.any():
-            ax.scatter(mins[trusted], rates[trusted], s=40, c=confs[trusted], cmap=CONF_CMAP,
-                       norm=norm, edgecolors="black", linewidths=0.3, zorder=3)
-            med = float(np.median(rates[trusted]))
-            spread = float(np.std(rates[trusted]))
-            ax.axhline(med, color="#444", lw=1.0, ls="-", alpha=0.6, zorder=1)
-            ax.axhspan(med - spread, med + spread, color="#444", alpha=0.07, zorder=0)
-            ax.text(0.005, 0.97, f"resting HR ≈ {med:.0f} bpm  ({trusted.sum()} confident win)",
-                    transform=ax.transAxes, va="top", ha="left", fontsize=9,
-                    bbox=dict(boxstyle="round", fc="white", ec="#ccc", alpha=0.8))
-        sm = plt.cm.ScalarMappable(cmap=CONF_CMAP, norm=norm); sm.set_array([])
-        fig.colorbar(sm, ax=ax, label="confidence", pad=0.01)
+                chunks.append(np.asarray(env, float)); tline.append(np.full(len(env), float(row["minutes"])))
+        stream = np.concatenate(chunks); times = np.concatenate(tline)
+        band = _bandpass_bpm(stream, hz, HEART_MIN_BPM, HEART_MAX_BPM)
+        n = int(60 * hz)
+        for start in range(0, len(band) - n + 1, n):
+            minute = float(times[start + n // 2])
+            for b, c in _hr_all_peaks(band[start:start + n], hz):
+                if c >= HEARTBEAT_TRUST_BAR:
+                    ax.scatter(minute, b, s=8, color="#bbb", alpha=0.4, zorder=1)
+        # Red track.
+        m = [t[0] for t in track]; y = [t[1] for t in track]
+        ax.plot(m, y, color="#c0392b", lw=1.5, zorder=3)
+        ax.scatter(m, y, s=20, color="#c0392b", edgecolors="white", linewidths=0.4, zorder=4)
+        med = float(np.median(y))
+        ax.text(0.005, 0.97,
+                f"resting HR ≈ {med:.0f} bpm  ({len(track)} tracked win; harmonics rejected → grey)",
+                transform=ax.transAxes, va="top", ha="left", fontsize=9,
+                bbox=dict(boxstyle="round", fc="white", ec="#ccc", alpha=0.85))
     else:
         why = (f"envelope only {hz:.0f} Hz — too slow for heartbeat (need ≥ "
                f"{HEART_MAX_BPM/60*2:.0f} Hz)") if hz < HEART_MAX_BPM / 60.0 * 2 else \
-              "no accel envelope to read a pulse from"
-        ax.text(0.5, 0.5, f"No heart-rate data\n({why})", transform=ax.transAxes,
+              "no confident heartbeat track formed"
+        ax.text(0.5, 0.5, f"No heart-rate track\n({why})", transform=ax.transAxes,
                 ha="center", va="center", fontsize=11, color="#888")
 
     ax.set_ylim(HEART_MIN_BPM, HEART_MAX_BPM)
-    ax.set(title="Heart rate (accel BCG) — color = confidence; faint = below trust bar",
+    ax.set(title="Heart rate (accel BCG) — red = tracked heartbeat, grey = rejected harmonic candidates",
            ylabel="bpm")
     set_hours_axis(ax, xmax)
     fig.tight_layout()
