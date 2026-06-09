@@ -32,6 +32,11 @@ BREATHING_MAX_BPM = 30.0
 HEART_MIN_BPM = 40.0
 HEART_MAX_BPM = 120.0
 
+# Approximate dBFS→dB-SPL offset. Mirrors SomnyaConfig.nominalSPLOffsetDB: MEMS mic sensitivity
+# ≈ −26 dBFS @ 94 dB-SPL → offset ≈ 120 dB, within a few dB across iPhones. Approximate (more so
+# with AGC on). TODO: read a per-session calibrated offset from the export once the app writes it.
+SPL_OFFSET_DB = 120.0
+
 
 def classify_phone_state(df: pd.DataFrame) -> pd.DataFrame:
     """Label each window 'on_surface' vs in-hand, from signals we already capture. A phone resting
@@ -506,7 +511,7 @@ CONF_CMAP = _LSC.from_list("somnya_conf", ["#e74c3c", "#8e44ad", "#2c6fbb", "#27
 
 
 def plot_value_with_confidence(ax, minutes, values, conf, *, conf_lo=0.15, conf_hi=0.55,
-                               window_min=0.5, gap_factor=1.2):
+                               window_min=0.5, gap_factor=1.2, trust_bar=0.30):
     """Plot a value-over-time series where COLOR = confidence and the line BREAKS at data gaps.
 
     Honesty rules baked in:
@@ -515,8 +520,10 @@ def plot_value_with_confidence(ax, minutes, values, conf, *, conf_lo=0.15, conf_
       absence.
     - Isolated detections (no consecutive neighbor) render as standalone dots — a real-but-unconfirmed
       reading, honestly shown rather than strung into a fake line.
-    - Color = confidence (blue→red); alpha also scales with confidence so low-conf points recede and
-      the eye is drawn to where we're actually sure."""
+    - Color = confidence (blue→red). Low-confidence points are ALSO drawn smaller AND fainter (same
+      treatment as the heartbeat chart) so unsure readings recede to a faint cloud and the eye is
+      drawn to where we're actually sure — coverage stays honest (nothing hidden), just de-emphasized.
+    - `trust_bar` splits trusted (big, opaque, outlined) from below-bar attempts (small, faint)."""
     from matplotlib.collections import LineCollection
     x = np.asarray(minutes, dtype=float)
     y = np.asarray(values, dtype=float)
@@ -534,35 +541,66 @@ def plot_value_with_confidence(ax, minutes, values, conf, *, conf_lo=0.15, conf_
         lc = LineCollection(segs, cmap=CONF_CMAP, norm=norm, linewidth=2.6)
         lc.set_array(np.asarray(segc))
         ax.add_collection(lc)
-    # Points (all of them), alpha by confidence.
-    for xi, yi, ci in zip(x, y, c):
-        ax.scatter(xi, yi, c=[ci], cmap=CONF_CMAP, norm=norm,
-                   s=26, alpha=max(0.15, min(1.0, ci / conf_hi)), zorder=3)
+    # Points, two tiers (matches heartbeat chart): trusted = big+opaque+outlined, attempts = small+faint.
+    trusted = c >= trust_bar
+    if (~trusted).any():
+        ax.scatter(x[~trusted], y[~trusted], c=c[~trusted], cmap=CONF_CMAP, norm=norm,
+                   s=10, alpha=0.30, edgecolors="none", zorder=3)
+    if trusted.any():
+        ax.scatter(x[trusted], y[trusted], c=c[trusted], cmap=CONF_CMAP, norm=norm,
+                   s=34, alpha=0.95, edgecolors="black", linewidths=0.3, zorder=4)
     # A mappable for the colorbar.
     sm = plt.cm.ScalarMappable(cmap=CONF_CMAP, norm=norm); sm.set_array([])
     return sm
 
 
+def set_hours_axis(ax, total_minutes: float) -> None:
+    """X-axis in HOURS with sub-hour gradations. Easier to read than raw minutes for a night-long
+    span: major ticks every hour (labeled 0h,1h,…), minor ticks every 15 min (unlabeled). Data
+    stays plotted in minutes; we just relabel — minutes/60 = hours."""
+    from matplotlib.ticker import MultipleLocator, FuncFormatter
+    ax.xaxis.set_major_locator(MultipleLocator(60))      # one tick per hour
+    ax.xaxis.set_minor_locator(MultipleLocator(15))      # quarter-hour gradations
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda m, _: f"{m/60:g}h"))
+    ax.tick_params(axis="x", which="minor", length=3)
+    ax.set_xlabel("time (hours)")
+    ax.set_xlim(0, max(total_minutes, 1))
+
+
 def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    total_min = float(df["minutes"].iloc[-1])
 
     # 1. Movement timeline.
     fig, ax = plt.subplots(figsize=(10, 3.2))
     ax.fill_between(df["minutes"], df["accel_activity_count"], color="indigo", alpha=0.6)
-    ax.set(title="Movement (accel activity count) per 30s window",
-           xlabel="minutes", ylabel="activity")
+    ax.set(title="Movement (accel activity count) per 30s window", ylabel="activity")
+    set_hours_axis(ax, total_min)
     p = out_dir / "movement.png"
     fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
-    # 2. Audio RMS vs floor — the money plot for the current problem.
+    # 2. Audio level vs floor — in approximate dB-SPL, the scale people actually understand
+    #    (whisper ≈ 30, conversation ≈ 60, traffic ≈ 85). dB_SPL = 20·log10(amp) + SPL_OFFSET_DB.
+    #    The offset anchors our uncalibrated mic level to the real world: MEMS mic sensitivity is
+    #    ≈ −26 dBFS at 94 dB-SPL → offset ≈ 94 − (−26) = 120 dB, matched within a few dB across
+    #    iPhones (mirrors SomnyaConfig.nominalSPLOffsetDB). APPROXIMATE (and more so with AGC on) —
+    #    good for "noisy vs quiet", not a certified meter. Per-phone calibration in the app refines it.
     if not df["audio_rms"].isna().all():
+        eps = 1e-9  # floor to keep log finite where rms hits 0
+        rms_db = 20.0 * np.log10(df["audio_rms"].clip(lower=eps)) + SPL_OFFSET_DB
+        floor_db = 20.0 * np.log10(df["audio_floor"].clip(lower=eps)) + SPL_OFFSET_DB
         fig, ax = plt.subplots(figsize=(10, 3.2))
-        ax.plot(df["minutes"], df["audio_rms"], color="teal", label="audio_rms")
-        ax.plot(df["minutes"], df["audio_floor"], color="orange", ls="--", label="noise floor")
-        ax.set(title="Audio RMS vs noise floor (overlap = breathing buried)",
-               xlabel="minutes", ylabel="amplitude")
-        ax.legend()
+        ax.plot(df["minutes"], rms_db, color="teal", label="audio_rms")
+        ax.plot(df["minutes"], floor_db, color="orange", ls="--", label="noise floor")
+        # Reference gridlines for the familiar loudness scale.
+        for lvl, name in ((30, "whisper"), (60, "conversation"), (85, "traffic")):
+            ax.axhline(lvl, color="#bbb", lw=0.7, ls=":", zorder=0)
+            ax.text(0.0, lvl, f" {name}", color="#999", fontsize=7, va="bottom", ha="left")
+        ax.set(title="Sound level vs noise floor (≈ dB-SPL, approximate; overlap = breathing buried)",
+               ylabel="level (≈ dB-SPL)")
+        set_hours_axis(ax, total_min)
+        ax.legend(loc="upper right")
         p = out_dir / "audio_rms_vs_floor.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
@@ -579,17 +617,20 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
             ax, br_df["minutes"].to_numpy(), br_df["breathing_rate_bpm"].to_numpy(),
             br_df["breathing_confidence"].to_numpy(), window_min=win_min)
         fig.colorbar(sm, ax=ax, label="confidence", pad=0.01)
-        ax.set(title="Breathing rate — color = confidence, gaps = no trustworthy reading",
-               xlabel="minutes", ylabel="brpm", ylim=(0, 32))
-        ax.set_xlim(df["minutes"].min(), df["minutes"].max())
+        ax.set(title="Breathing rate — bright = confident, faint = unsure attempt, gaps = no reading",
+               ylabel="brpm", ylim=(0, 32))
+        set_hours_axis(ax, total_min)
         p = out_dir / "breathing.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
     # 4. Movement timeline: dots on a baseline, sized by how far above stillness each movement was, so
     #    trivial stirs nearly vanish and only real movements stand out. Mostly-empty = mostly-still.
     #    Lazy import avoids a circular import (stats imports from this module).
-    from .stats import plot_movement_timeline
+    from .stats import plot_movement_timeline, plot_heartbeat
     written.append(plot_movement_timeline(df, out_dir / "movement_timeline.png"))
+
+    # 5. Heart rate (accel BCG) over the night — confidence-colored, faint below the trust bar.
+    written.append(plot_heartbeat(df, out_dir / "heartbeat.png"))
 
     return written
 

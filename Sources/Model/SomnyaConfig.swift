@@ -51,6 +51,68 @@ enum SomnyaConfig {
     /// slow to adapt (tracks the quiet baseline, ignores transient sounds).
     static let noiseFloorSmoothing: Double = 0.02
 
+    // MARK: - Sound-level calibration (dB-SPL)
+
+    /// Offset that converts our raw mic level into real-world decibels (dB-SPL):
+    ///   dB_SPL = 20·log10(audio_rms) + splOffset
+    /// `audio_rms` is uncalibrated electrical amplitude — proportional to loudness but with no anchor
+    /// to the real world. This offset IS that anchor. Two sources, in priority order:
+    ///
+    ///   1. USER CALIBRATION (best): measured once via the in-app screen against a reference SPL meter,
+    ///      stored in UserDefaults. Captures THIS phone through THIS app's AGC path. Overrides the
+    ///      default when present.
+    ///   2. NOMINAL DEFAULT (`nominalSPLOffsetDB`): a built-in fallback so dB works with zero setup.
+    ///      Justified by research: MEMS mic sensitivity ≈ −26 dBFS at 94 dB-SPL → offset ≈ 94−(−26) =
+    ///      120 dB, and iOS mics are matched within ~±1–3 dB across units (NIOSH validated one nominal
+    ///      value to ±2 dBA on the built-in mic). So the default lands within a few dB on any iPhone.
+    ///
+    /// Either way the dB is ESTIMATED, not a precision instrument — more so for us because we run AGC
+    /// ON (mode .default, so quiet breathing rises), which drifts the gain off the fixed −26 dBFS
+    /// assumption. We never claim certified dB; we show an honest approximate scale.
+    ///
+    /// Nominal value: 94 dB-SPL reference − (−26 dBFS typical MEMS sensitivity) = 120 dB. PLACEHOLDER
+    /// for a per-model table later; one constant is within a few dB across iPhones today.
+    static let nominalSPLOffsetDB: Double = 120
+
+    private static let splOffsetKey = "somnya.splOffsetDB"
+
+    /// The user's measured offset, or nil if they haven't calibrated. Set by the calibration screen.
+    static var userSPLOffsetDB: Double? {
+        get {
+            // UserDefaults returns 0.0 for a missing key, so guard on presence explicitly.
+            guard UserDefaults.standard.object(forKey: splOffsetKey) != nil else { return nil }
+            return UserDefaults.standard.double(forKey: splOffsetKey)
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: splOffsetKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: splOffsetKey)
+            }
+        }
+    }
+
+    /// The offset actually used: the user's calibration if present, else the nominal default.
+    /// Always non-nil — dB-SPL is available out of the box, refined by calibration.
+    static var splOffsetDB: Double { userSPLOffsetDB ?? nominalSPLOffsetDB }
+
+    /// True when the offset in use was measured by the user (exact-ish), false when it's the nominal
+    /// default (approximate). Drives honest labeling: "calibrated" vs "approximate".
+    static var isSPLCalibrated: Bool { userSPLOffsetDB != nil }
+
+    /// Convert a raw mic RMS level to dBFS (decibels below full-scale; always ≤ 0).
+    /// Pure/unit-testable; `floorDB` clamps silence so log stays finite.
+    static func dbFS(fromRMS rms: Double, floorDB: Double = -120) -> Double {
+        guard rms > 0 else { return floorDB }
+        return max(floorDB, 20 * log10(rms))
+    }
+
+    /// Convert a raw mic RMS level to dB-SPL. Always available (nominal default if uncalibrated);
+    /// pair with `isSPLCalibrated` to label it exact vs approximate.
+    static func dbSPL(fromRMS rms: Double) -> Double {
+        dbFS(fromRMS: rms) + splOffsetDB
+    }
+
     /// Band-pass edges (Hz) applied to audio BEFORE building the envelope. Breathing airflow noise
     /// is low-frequency; birds/hiss/sibilance are high. Isolating this band rejects that noise —
     /// gain can't (it scales noise too). PLACEHOLDER edges — tune against real before/after data.
