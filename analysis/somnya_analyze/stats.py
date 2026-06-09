@@ -338,6 +338,85 @@ def format_movement_timeline(events: list[MovementEvent]) -> str:
     return "\n".join(out)
 
 
+def plot_heartbeat(df: pd.DataFrame, out_path):
+    """Heart rate (accel BCG) over the night: one dot per analysis window, positioned by bpm and
+    colored by confidence — same language as the breathing chart (position = value, color = trust).
+
+    Honest by construction: each dot is tagged with the window's ACTUAL minute (we don't concatenate
+    away the off-bed gaps), dots below the 0.40 trust bar are drawn faint+small (attempts we don't
+    trust, shown not hidden), and a band marks the confident median ± its spread. Mostly-faint =
+    'we mostly couldn't read your pulse'; a tight cloud of bright dots = a real, stable resting HR."""
+    import matplotlib.pyplot as plt
+    from . import CONF_CMAP, set_hours_axis
+
+    hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
+    xmax = (float(df["minutes"].iloc[-1]) + _window_minutes(df)) if len(df) else 1.0
+
+    mins, rates, confs = [], [], []
+    if "accel_envelope" in df.columns and hz >= HEART_MAX_BPM / 60.0 * 2:
+        surf = _surface_only(df) if "on_surface" in df.columns else df
+        # A single 30s window (~242 samples @8Hz) is too short for a 60s heartbeat analysis window,
+        # so concatenate the on-surface envelopes (same as _heartbeat_stat) but carry a PARALLEL
+        # minute-per-sample timeline, so each 60s chunk maps back to a real wall-clock minute.
+        chunks, tline = [], []
+        for _, row in surf.iterrows():
+            env = row["accel_envelope"]
+            if isinstance(env, list) and env:
+                chunks.append(np.asarray(env, float))
+                tline.append(np.full(len(env), float(row["minutes"])))
+        if chunks:
+            stream = np.concatenate(chunks)
+            times = np.concatenate(tline)
+            band = _bandpass_bpm(stream, hz, HEART_MIN_BPM, HEART_MAX_BPM)
+            n = int(60 * hz)
+            for start in range(0, len(band) - n + 1, n):
+                bpm, conf = _estimate_periodic_peak(band[start:start + n], hz,
+                                                    min_bpm=HEART_MIN_BPM, max_bpm=HEART_MAX_BPM,
+                                                    min_conf=0.0)  # keep below-bar attempts for the plot
+                if bpm is not None:
+                    mins.append(float(times[start + n // 2]))  # midpoint window's real minute
+                    rates.append(bpm)
+                    confs.append(conf)
+
+    fig, ax = plt.subplots(figsize=(11, 3.0))
+    if rates:
+        mins = np.asarray(mins); rates = np.asarray(rates); confs = np.asarray(confs)
+        trusted = confs >= HEARTBEAT_TRUST_BAR
+        norm = plt.Normalize(0.15, 0.55)  # same scale as breathing chart's confidence colors
+        # faint below-bar attempts (small, low alpha) so coverage is honest, not airbrushed
+        if (~trusted).any():
+            ax.scatter(mins[~trusted], rates[~trusted], s=10, c=confs[~trusted], cmap=CONF_CMAP,
+                       norm=norm, alpha=0.35, edgecolors="none", zorder=2)
+        # trusted points: bigger, opaque, outlined
+        if trusted.any():
+            ax.scatter(mins[trusted], rates[trusted], s=40, c=confs[trusted], cmap=CONF_CMAP,
+                       norm=norm, edgecolors="black", linewidths=0.3, zorder=3)
+            med = float(np.median(rates[trusted]))
+            spread = float(np.std(rates[trusted]))
+            ax.axhline(med, color="#444", lw=1.0, ls="-", alpha=0.6, zorder=1)
+            ax.axhspan(med - spread, med + spread, color="#444", alpha=0.07, zorder=0)
+            ax.text(0.005, 0.97, f"resting HR ≈ {med:.0f} bpm  ({trusted.sum()} confident win)",
+                    transform=ax.transAxes, va="top", ha="left", fontsize=9,
+                    bbox=dict(boxstyle="round", fc="white", ec="#ccc", alpha=0.8))
+        sm = plt.cm.ScalarMappable(cmap=CONF_CMAP, norm=norm); sm.set_array([])
+        fig.colorbar(sm, ax=ax, label="confidence", pad=0.01)
+    else:
+        why = (f"envelope only {hz:.0f} Hz — too slow for heartbeat (need ≥ "
+               f"{HEART_MAX_BPM/60*2:.0f} Hz)") if hz < HEART_MAX_BPM / 60.0 * 2 else \
+              "no accel envelope to read a pulse from"
+        ax.text(0.5, 0.5, f"No heart-rate data\n({why})", transform=ax.transAxes,
+                ha="center", va="center", fontsize=11, color="#888")
+
+    ax.set_ylim(HEART_MIN_BPM, HEART_MAX_BPM)
+    ax.set(title="Heart rate (accel BCG) — color = confidence; faint = below trust bar",
+           ylabel="bpm")
+    set_hours_axis(ax, xmax)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return out_path
+
+
 def plot_movement_timeline(df: pd.DataFrame, out_path):
     """The movement timeline as a graph: one dot per discrete movement, sized + colored by intensity,
     on a horizontal time axis. The honest counterpart to the raw activity fill — it shows discrete
@@ -396,14 +475,14 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
                 ax.annotate("↻", (e.minute, e.activity), fontsize=12, ha="center", va="bottom",
                             xytext=(0, 8), textcoords="offset points", color="#e74c3c")
 
-    ax.set_xlim(0, xmax)
     ax.set_ylim(MOVEMENT_THRESHOLD * 0.7,
                 max(3.0, (max(e.activity for e in events) * 1.15) if events else 3.0))
     ax.set(title="Movement timeline — bigger/higher dot = bigger movement. Mostly empty = mostly still.",
-           xlabel="minutes",
            # Honest about the unit: a relative actigraphy index (integrated jerk over the window),
            # good for ORDERING movements, not a physical absolute.
            ylabel="movement intensity\n(activity index)")
+    from . import set_hours_axis  # shared hours x-axis (lazy import avoids circular import)
+    set_hours_axis(ax, xmax)
     if "on_surface" in df.columns and not df["on_surface"].all():
         ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
     fig.tight_layout()
