@@ -449,13 +449,25 @@ def plot_heartbeat(df: pd.DataFrame, out_path):
             for b, c in _hr_all_peaks(band[start:start + n], hz):
                 if c >= HEARTBEAT_TRUST_BAR:
                     ax.scatter(minute, b, s=8, color="#bbb", alpha=0.4, zorder=1)
-        # Red track.
+        # Red track — but BREAK the line across gaps so we never draw a connecting segment through
+        # minutes we couldn't read (that would imply a measurement that doesn't exist; honesty rule,
+        # same as the breathing chart). A gap > GAP_BREAK_MIN minutes splits the line; dots always show.
+        GAP_BREAK_MIN = 4.0  # > a couple of analysis windows = a real gap, not just one dropped read
         m = [t[0] for t in track]; y = [t[1] for t in track]
-        ax.plot(m, y, color="#c0392b", lw=1.5, zorder=3)
+        seg_x, seg_y = [m[0]], [y[0]]
+        for i in range(1, len(m)):
+            if m[i] - m[i - 1] > GAP_BREAK_MIN:
+                ax.plot(seg_x, seg_y, color="#c0392b", lw=1.5, zorder=3)
+                seg_x, seg_y = [], []
+            seg_x.append(m[i]); seg_y.append(y[i])
+        if seg_x:
+            ax.plot(seg_x, seg_y, color="#c0392b", lw=1.5, zorder=3)
         ax.scatter(m, y, s=20, color="#c0392b", edgecolors="white", linewidths=0.4, zorder=4)
         med = float(np.median(y))
+        coverage = 100.0 * len(track) / max(1, int((df["minutes"].iloc[-1]) / (n / hz / 60.0)))
         ax.text(0.005, 0.97,
-                f"resting HR ≈ {med:.0f} bpm  ({len(track)} tracked win; harmonics rejected → grey)",
+                f"resting HR ≈ {med:.0f} bpm  (read on {len(track)} windows ≈ {coverage:.0f}% of the night; "
+                "gaps = no reading)",
                 transform=ax.transAxes, va="top", ha="left", fontsize=9,
                 bbox=dict(boxstyle="round", fc="white", ec="#ccc", alpha=0.85))
     else:
