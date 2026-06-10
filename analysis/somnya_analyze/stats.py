@@ -97,6 +97,16 @@ MIN_CONFIDENT_FOR_REGULARITY = 6  # need enough confident windows for a std to m
 HEARTBEAT_MAX_SLEW_BPM_PER_S = 0.5   # sleeping HR changes slowly; tight = clean track, rejects spikes
 HEARTBEAT_HARMONIC_TOL = 0.12        # how close to exactly 2x counts as "a harmonic to snap down"
 
+# Multi-scale coverage (two-pass detector). A window-size sweep on real nights showed the tradeoff
+# cleanly: long windows (120s) are mostly TRUE (~71% of reads land on the real ~50-55 bpm fundamental,
+# harmonics/noise averaged out) but sparse; short windows (15s) catch ~3-4x more moments but ~60% of
+# their reads are noise/harmonic false-positives. So: PASS 1 builds a trustworthy ANCHOR track from
+# long windows; PASS 2 walks short windows and keeps a read ONLY if it agrees with the anchor — short
+# windows supply coverage, the anchor supplies the truth that filters their false-positives.
+HEARTBEAT_ANCHOR_WIN_S = 120.0       # long window: high % real, locks the true fundamental
+HEARTBEAT_INFILL_WIN_S = 15.0        # short window: nimble, catches brief well-coupled moments
+HEARTBEAT_INFILL_TOL_BPM = 6.0       # an infill read must land within this of the interpolated anchor
+
 
 def _window_minutes(df: pd.DataFrame) -> float:
     return float(df.attrs.get("config", {}).get("window_seconds", 30)) / 60.0
@@ -239,6 +249,9 @@ def compute_sleep_stats(df: pd.DataFrame) -> list[Stat]:
                           detail="movement → definitely NOT deep sleep here "
                                  "(one-way: stillness can't prove the reverse)"))
 
+    # ---- ESTIMATED: time to fall asleep (body settling into sustained quiet) -----------------
+    stats.append(_sleep_onset_stat(df, surf, wmin))
+
     # ---- ESTIMATED: breathing ----------------------------------------------------------------
     stats.extend(_breathing_stats(surf))
 
@@ -313,8 +326,27 @@ def _hr_all_peaks(x, hz, min_conf=0.30):
     return peaks
 
 
-def _heartbeat_series(df: pd.DataFrame, surf: pd.DataFrame):
-    """Slew-limited heartbeat track over the night → list of (minute, bpm, conf).
+def _hr_global_seed(band, times, hz, win_s):
+    """Robust starting HR for the tracker: the MEDIAN of each window's best fundamental across the whole
+    night. A single seed window can land on a harmonic (e.g. 91 when the truth is 55); the night-wide
+    median can't, because the true rate is by far the most common value and harmonics are outvoted."""
+    n = int(win_s * hz)
+    if n < 4 or len(band) < n:
+        return None
+    fundamentals = []
+    for start in range(0, len(band) - n + 1, n):
+        peaks = [(b, c) for b, c in _hr_all_peaks(band[start:start + n], hz)
+                 if c >= HEARTBEAT_TRUST_BAR and HEART_MIN_BPM <= b <= HEART_MAX_BPM]
+        if not peaks:
+            continue
+        top = peaks[0][1]
+        strong = [b for b, c in peaks if c >= top * 0.8]  # lowest strong peak = this window's fundamental
+        fundamentals.append(min(strong))
+    return float(np.median(fundamentals)) if fundamentals else None
+
+
+def _hr_anchor_track(band, times, hz, win_s, seed=None):
+    """Slew-limited heartbeat track on one window size → list of (minute, bpm, conf).
 
     Three defenses against 2x-harmonic lock-in (the cause of the ~51-vs-~95 bimodal scatter):
       1. Slew limit: a candidate may move the running HR by at most HEARTBEAT_MAX_SLEW_BPM_PER_S × the
@@ -322,7 +354,56 @@ def _heartbeat_series(df: pd.DataFrame, surf: pd.DataFrame):
          — so a real HR rise (gradual) passes but an instant 51→95 teleport (harmonic) is rejected.
       2. Sub-harmonic snap: a candidate ~2× the track is replaced by its half (the true fundamental).
       3. Physiological envelope: HEART_MIN_BPM..HEART_MAX_BPM backstop for wild artifacts.
-    Returns [] (→ GUESSED) when the envelope is too slow or no confident track forms."""
+    `seed` (a global-median HR) pins the starting rate so the track can't begin locked on a harmonic."""
+    n = int(win_s * hz)
+    if n < 4 or len(band) < n:
+        return []
+    out = []
+    cur = seed
+    last_min = None
+    for start in range(0, len(band) - n + 1, n):
+        minute = float(times[start + n // 2])
+        peaks = _hr_all_peaks(band[start:start + n], hz)
+        cands = [(b, c) for b, c in peaks
+                 if c >= HEARTBEAT_TRUST_BAR and HEART_MIN_BPM <= b <= HEART_MAX_BPM]
+        if not cands:
+            continue
+        if cur is None:
+            # No global seed available — fall back to the lowest of the near-strongest peaks.
+            top = cands[0][1]
+            strong = [b for b, c in cands if c >= top * 0.8]
+            cur = min(strong) if strong else cands[0][0]
+            out.append((minute, cur, cands[0][1])); last_min = minute
+            continue
+        if last_min is None:
+            # Seeded from the global median: let the first real read land anywhere within the infill
+            # tolerance of the seed (the median is robust but approximate), then slew normally after.
+            budget = HEARTBEAT_INFILL_TOL_BPM
+        else:
+            budget = HEARTBEAT_MAX_SLEW_BPM_PER_S * max(1.0, (minute - last_min) * 60.0)
+        expanded = list(cands)
+        for b, c in cands:
+            if abs(b / cur - 2.0) < HEARTBEAT_HARMONIC_TOL * 2 and abs(b / 2 - cur) < abs(b - cur):
+                expanded.append((b / 2.0, c))  # snap a ~2x harmonic down to the fundamental
+        within = [(b, c) for b, c in expanded if abs(b - cur) <= budget]
+        if not within:
+            continue  # nothing plausible this window — coast, don't force a point
+        b, c = min(within, key=lambda t: (abs(t[0] - cur), -t[1]))
+        cur = 0.7 * cur + 0.3 * b  # gentle smoothing toward the accepted candidate
+        out.append((minute, cur, c)); last_min = minute
+    return out
+
+
+def _heartbeat_series(df: pd.DataFrame, surf: pd.DataFrame):
+    """Two-pass multi-scale heartbeat track over the night → list of (minute, bpm, conf).
+
+    PASS 1 (anchor): a long window (HEARTBEAT_ANCHOR_WIN_S) builds a trustworthy slew-limited track —
+      long windows are mostly TRUE (the real fundamental dominates; harmonics/noise average out).
+    PASS 2 (infill): short windows (HEARTBEAT_INFILL_WIN_S) catch brief well-coupled moments the long
+      windows miss, but only a read that AGREES with the interpolated anchor (within HEARTBEAT_INFILL_
+      TOL_BPM) is kept — the anchor's truth filters the short windows' noise/harmonic false-positives.
+    The merged, time-sorted points give long-window confidence WITH short-window coverage.
+    Returns [] (→ GUESSED) when the envelope is too slow or no confident anchor forms."""
     if "accel_envelope" not in surf.columns:
         return []
     hz = float(df.attrs.get("config", {}).get("accel_envelope_hz", 8.0))
@@ -339,37 +420,115 @@ def _heartbeat_series(df: pd.DataFrame, surf: pd.DataFrame):
     stream = np.concatenate(chunks)
     times = np.concatenate(tline)
     band = _bandpass_bpm(stream, hz, HEART_MIN_BPM, HEART_MAX_BPM)
-    n = int(60 * hz)
 
-    out = []
-    cur = None
-    last_min = None
-    for start in range(0, len(band) - n + 1, n):
-        minute = float(times[start + n // 2])
-        peaks = _hr_all_peaks(band[start:start + n], hz)
-        cands = [(b, c) for b, c in peaks
-                 if c >= HEARTBEAT_TRUST_BAR and HEART_MIN_BPM <= b <= HEART_MAX_BPM]
-        if not cands:
-            continue
-        if cur is None:
-            # Seed on the LOWEST among the near-strongest peaks → avoid seeding on a harmonic.
-            top = cands[0][1]
-            strong = [b for b, c in cands if c >= top * 0.8]
-            cur = min(strong) if strong else cands[0][0]
-            out.append((minute, cur, cands[0][1])); last_min = minute
-            continue
-        budget = HEARTBEAT_MAX_SLEW_BPM_PER_S * max(1.0, (minute - last_min) * 60.0)
-        expanded = list(cands)
-        for b, c in cands:
-            if abs(b / cur - 2.0) < HEARTBEAT_HARMONIC_TOL * 2 and abs(b / 2 - cur) < abs(b - cur):
-                expanded.append((b / 2.0, c))  # snap a ~2x harmonic down to the fundamental
-        within = [(b, c) for b, c in expanded if abs(b - cur) <= budget]
-        if not within:
-            continue  # nothing plausible this window — coast, don't force a point
-        b, c = min(within, key=lambda t: (abs(t[0] - cur), -t[1]))
-        cur = 0.7 * cur + 0.3 * b  # gentle smoothing toward the accepted candidate
-        out.append((minute, cur, c)); last_min = minute
-    return out
+    # PASS 1 — the anchor. Seed from the night-wide median fundamental so the track can't begin locked
+    # on a harmonic, then slew-track on long windows. Without an anchor there's no truth to check infill
+    # against, so bail to GUESSED.
+    seed = _hr_global_seed(band, times, hz, HEARTBEAT_ANCHOR_WIN_S)
+    anchor = _hr_anchor_track(band, times, hz, HEARTBEAT_ANCHOR_WIN_S, seed=seed)
+    if not anchor:
+        return []
+    if len(anchor) == 1:
+        return anchor  # single long read — nothing to interpolate against; report it as-is
+
+    amins = np.array([m for m, _, _ in anchor])
+    arates = np.array([b for _, b, _ in anchor])
+
+    # PASS 2 — infill from short windows, gated by agreement with the interpolated anchor.
+    n = int(HEARTBEAT_INFILL_WIN_S * hz)
+    infill = []
+    if n >= 4 and len(band) >= n:
+        for start in range(0, len(band) - n + 1, n):
+            minute = float(times[start + n // 2])
+            expected = float(np.interp(minute, amins, arates))  # the anchor's truth at this instant
+            peaks = _hr_all_peaks(band[start:start + n], hz)
+            best = None
+            for b, c in peaks:
+                if c < HEARTBEAT_TRUST_BAR:
+                    continue
+                for cand in (b, b / 2.0, b * 2.0):  # allow snapping an octave to meet the anchor
+                    if HEART_MIN_BPM <= cand <= HEART_MAX_BPM and abs(cand - expected) <= HEARTBEAT_INFILL_TOL_BPM:
+                        if best is None or c > best[1]:
+                            best = (cand, c)
+                        break
+            if best is not None:
+                infill.append((minute, best[0], best[1]))
+
+    # Merge anchor + infill, dedup near-coincident minutes (prefer the anchor's value), sort by time.
+    merged = list(anchor)
+    occupied = list(amins)
+    for m, b, c in infill:
+        if all(abs(m - om) > HEARTBEAT_INFILL_WIN_S / 60.0 for om in occupied):
+            merged.append((m, b, c)); occupied.append(m)
+    merged.sort(key=lambda t: t[0])
+    return merged
+
+
+# Sleep-onset estimator. We have NO brain signal, so we can never see "asleep" directly — only the
+# BODY's correlates of falling asleep, which on real nights flip together at onset:
+#   1. Sustained stillness — awake-in-bed fidgets and repositions (immobility run keeps resetting to 0);
+#      sleep onset is when you go still and STAY still (the run lengthens and holds).
+#   2. Regular breathing — awake breathing is irregular (low breathing_confidence); it settles into a
+#      steady rhythm as you drift off (confidence rises and holds).
+# This is ESTIMATED with a RANGE, never a precise MEASURED timestamp: the body settling ≠ the brain
+# crossing into N1 (they differ by minutes), and the settling itself is gradual. We report the window
+# where both signals first agree, as a start-of-range, with "restless before" honesty.
+ONSET_IMMOBILITY_RUN = 8        # windows of unbroken stillness that mark "settled" (≈4 min at 30s win)
+ONSET_BREATH_CONF = 0.33        # breathing_confidence at/above which the rhythm reads as regular
+ONSET_HOLD_WINDOWS = 6          # the settled state must PERSIST this many windows (not a one-off lull)
+
+
+def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat:
+    """Time-to-fall-asleep, reported as TWO honest milestones that coincide on easy nights and diverge
+    on restless ones:
+      • drifted  — first time the body first settles into sleep-like quiet (the "I started dozing" point)
+      • settled  — first time that quiet HOLDS without being broken (the "definitely asleep by" point)
+    On a fast clean night these are minutes apart and we show one number; on a fitful night (stirring
+    awake repeatedly) they separate, and the gap IS the story. Works for naps too: the hold requirement
+    shrinks for short recordings so a brief nap that's mostly settling still reports."""
+    if "immobility_run_length" not in surf.columns or not len(surf):
+        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
+                    detail="need immobility + breathing signals — re-export from a fuller build")
+    s = surf.reset_index(drop=True)
+    imm = s["immobility_run_length"].to_numpy(dtype=float)
+    mins = s["minutes"].to_numpy(dtype=float)
+    bconf = (s["breathing_confidence"].to_numpy(dtype=float)
+             if "breathing_confidence" in s.columns else np.zeros(len(s)))
+    n = len(s)
+    # "Settled" window = stillness run is long AND breathing reads regular.
+    settled = (imm >= ONSET_IMMOBILITY_RUN) & (np.nan_to_num(bconf) >= ONSET_BREATH_CONF)
+
+    # DRIFTED = the first settled window at all (the body's first taste of sleep-like quiet).
+    drift_idx = int(np.argmax(settled)) if settled.any() else None
+    if drift_idx is None:
+        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
+                    detail="never settled into sustained sleep-like quiet — a restless night, "
+                           "or onset is off the recorded window")
+
+    # SETTLED = the first window that begins a HOLD. Hold length scales down for short recordings
+    # (naps) so a brief mostly-settled stretch still confirms, but never below 2 windows.
+    hold = max(2, min(ONSET_HOLD_WINDOWS, n // 4))
+    settle_idx = None
+    for i in range(drift_idx, n - hold + 1):
+        if settled[i:i + hold].mean() >= 0.66:  # mostly-settled run (tolerates a blip)
+            settle_idx = i
+            break
+    if settle_idx is None:
+        settle_idx = drift_idx  # settled at least once but never held — report the drift point
+
+    drift_min, settle_min = float(mins[drift_idx]), float(mins[settle_idx])
+    pre = s.iloc[:max(1, settle_idx)]
+    stirs = int((pre["accel_activity_count"] >= MOVEMENT_THRESHOLD).sum()) if "accel_activity_count" in pre else 0
+    # Report the SETTLED time as the headline number (the conservative "asleep by"); surface drift in detail.
+    if settle_min - drift_min >= 3:  # a real gap → fitful onset, the two-milestone story matters
+        detail = (f"started drifting ~{drift_min:.0f} min, solidly settled ~{settle_min:.0f} min "
+                  f"(kept getting disturbed: {stirs} stir(s) before settling; body-settling, "
+                  f"not brain onset — ± a few min)")
+    else:  # they coincide → clean onset, one number
+        detail = (f"settled into sleep-like quiet around min {settle_min:.0f} "
+                  f"(restless before: {stirs} stir(s); body-settling, not brain onset — ± a few min)")
+    return Stat("sleep_onset_min", "Time to fall asleep", Tier.ESTIMATED,
+                settle_min, "min", confidence=0.5, detail=detail)
 
 
 def _heartbeat_stat(df: pd.DataFrame, surf: pd.DataFrame) -> Stat:
