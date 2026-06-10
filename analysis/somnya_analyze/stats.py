@@ -478,17 +478,14 @@ ONSET_BREATH_CONF = 0.33        # breathing_confidence at/above which the rhythm
 ONSET_HOLD_WINDOWS = 6          # the settled state must PERSIST this many windows (not a one-off lull)
 
 
-def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat:
-    """Time-to-fall-asleep, reported as TWO honest milestones that coincide on easy nights and diverge
-    on restless ones:
-      • drifted  — first time the body first settles into sleep-like quiet (the "I started dozing" point)
-      • settled  — first time that quiet HOLDS without being broken (the "definitely asleep by" point)
-    On a fast clean night these are minutes apart and we show one number; on a fitful night (stirring
-    awake repeatedly) they separate, and the gap IS the story. Works for naps too: the hold requirement
-    shrinks for short recordings so a brief nap that's mostly settling still reports."""
+def sleep_onset(surf: pd.DataFrame):
+    """Detect the two body-settling milestones of falling asleep. Returns (drift_min, settle_min, stirs)
+    or None when no settling occurs. Shared by the stat and the onset plot so they never disagree.
+      • drift  — first window that reads sleep-like quiet (sustained stillness + regular breathing)
+      • settle — first such quiet that HOLDS (scaled-down hold for short recordings → naps still report)
+    No brain signal exists, so these are the body's correlates, not EEG onset — ESTIMATED, ± a few min."""
     if "immobility_run_length" not in surf.columns or not len(surf):
-        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
-                    detail="need immobility + breathing signals — re-export from a fuller build")
+        return None
     s = surf.reset_index(drop=True)
     imm = s["immobility_run_length"].to_numpy(dtype=float)
     mins = s["minutes"].to_numpy(dtype=float)
@@ -497,29 +494,35 @@ def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat
     n = len(s)
     # "Settled" window = stillness run is long AND breathing reads regular.
     settled = (imm >= ONSET_IMMOBILITY_RUN) & (np.nan_to_num(bconf) >= ONSET_BREATH_CONF)
-
-    # DRIFTED = the first settled window at all (the body's first taste of sleep-like quiet).
-    drift_idx = int(np.argmax(settled)) if settled.any() else None
-    if drift_idx is None:
-        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
-                    detail="never settled into sustained sleep-like quiet — a restless night, "
-                           "or onset is off the recorded window")
-
-    # SETTLED = the first window that begins a HOLD. Hold length scales down for short recordings
-    # (naps) so a brief mostly-settled stretch still confirms, but never below 2 windows.
+    if not settled.any():
+        return None
+    drift_idx = int(np.argmax(settled))  # first settled window at all
+    # SETTLED = first window that begins a HOLD. Hold scales down for short recordings, floor of 2.
     hold = max(2, min(ONSET_HOLD_WINDOWS, n // 4))
-    settle_idx = None
+    settle_idx = drift_idx  # fallback: settled once but never held → report the drift point
     for i in range(drift_idx, n - hold + 1):
         if settled[i:i + hold].mean() >= 0.66:  # mostly-settled run (tolerates a blip)
             settle_idx = i
             break
-    if settle_idx is None:
-        settle_idx = drift_idx  # settled at least once but never held — report the drift point
+    stirs = (int((s.iloc[:max(1, settle_idx)]["accel_activity_count"] >= MOVEMENT_THRESHOLD).sum())
+             if "accel_activity_count" in s.columns else 0)
+    return float(mins[drift_idx]), float(mins[settle_idx]), stirs
 
-    drift_min, settle_min = float(mins[drift_idx]), float(mins[settle_idx])
-    pre = s.iloc[:max(1, settle_idx)]
-    stirs = int((pre["accel_activity_count"] >= MOVEMENT_THRESHOLD).sum()) if "accel_activity_count" in pre else 0
-    # Report the SETTLED time as the headline number (the conservative "asleep by"); surface drift in detail.
+
+def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat:
+    """Time-to-fall-asleep, reported as TWO honest milestones that coincide on easy nights and diverge
+    on restless ones (drift = first sleep-like quiet, settle = first quiet that HOLDS). On a fitful
+    night the gap between them IS the story. ESTIMATED + range, never a precise timestamp."""
+    if "immobility_run_length" not in surf.columns or not len(surf):
+        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
+                    detail="need immobility + breathing signals — re-export from a fuller build")
+    res = sleep_onset(surf)
+    if res is None:
+        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
+                    detail="never settled into sustained sleep-like quiet — a restless night, "
+                           "or onset is off the recorded window")
+    drift_min, settle_min, stirs = res
+    # Headline = the SETTLED time (conservative "asleep by"); surface drift in the detail.
     if settle_min - drift_min >= 3:  # a real gap → fitful onset, the two-milestone story matters
         detail = (f"started drifting ~{drift_min:.0f} min, solidly settled ~{settle_min:.0f} min "
                   f"(kept getting disturbed: {stirs} stir(s) before settling; body-settling, "
@@ -640,6 +643,57 @@ def plot_heartbeat(df: pd.DataFrame, out_path):
     ax.set(title="Heart rate (accel BCG) — red = tracked heartbeat, grey = rejected harmonic candidates",
            ylabel="bpm")
     set_hours_axis(ax, xmax)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return out_path
+
+
+def plot_sleep_onset(df: pd.DataFrame, out_path):
+    """Falling-asleep timeline: the restless run-up, the moment you first drifted into sleep-like quiet,
+    and the moment that quiet HELD. Visualizes _sleep_onset_stat so you can SEE why the estimate is what
+    it is — the same three signals that settle together at onset, plotted over the early night.
+
+    Top band: movement activity (the restless run-up — spikes = stirs). Bottom band: how long stillness
+    has held unbroken (immobility run). Green dashed = drifted (first quiet); green solid = settled (quiet
+    that held). The shaded pre-settle region is time-to-fall-asleep, made visible and honestly bounded."""
+    import matplotlib.pyplot as plt
+    from . import set_hours_axis
+
+    surf = _surface_only(df)
+    res = sleep_onset(surf)
+    wmin = _window_minutes(df)
+    xmax = float(df["minutes"].iloc[-1]) + wmin if len(df) else 1.0
+
+    fig, ax = plt.subplots(figsize=(11, 3.0))
+    mins = surf["minutes"].to_numpy(dtype=float) if len(surf) else np.array([0.0])
+
+    # Restless run-up: movement activity as a faint fill (spikes = stirs while trying to settle).
+    if "accel_activity_count" in surf.columns and len(surf):
+        act = surf["accel_activity_count"].to_numpy(dtype=float)
+        ax.fill_between(mins, act, color="indigo", alpha=0.35, lw=0, label="movement (stirs)")
+        ax.axhline(MOVEMENT_THRESHOLD, color="#888", lw=0.7, ls=":", zorder=0)
+
+    if res is not None:
+        drift_min, settle_min, stirs = res
+        # Shade the pre-settle (falling-asleep) span — the time-to-sleep, bounded honestly.
+        ax.axvspan(0, settle_min, color="#f1c40f", alpha=0.10, zorder=0,
+                   label="falling asleep (time to settle)")
+        ax.axvline(drift_min, color="#27ae60", lw=1.4, ls="--", zorder=4,
+                   label=f"drifted ~{drift_min:.0f} min")
+        ax.axvline(settle_min, color="#1e8449", lw=2.2, zorder=4,
+                   label=f"settled ~{settle_min:.0f} min")
+        ax.set_title(f"Falling asleep — drifted ~{drift_min:.0f} min, settled ~{settle_min:.0f} min "
+                     f"({stirs} stir(s) before settling; body-settling, ± a few min)")
+    else:
+        ax.text(0.5, 0.5, "no clear settling into sleep-like quiet (restless night, or off-window)",
+                transform=ax.transAxes, ha="center", va="center", fontsize=11, color="#888")
+        ax.set_title("Falling asleep — no clear onset detected")
+
+    ax.set(ylabel="activity")
+    ax.set_ylim(bottom=0)
+    set_hours_axis(ax, xmax)
+    ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
     plt.close(fig)

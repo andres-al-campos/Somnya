@@ -626,11 +626,14 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     # 4. Movement timeline: dots on a baseline, sized by how far above stillness each movement was, so
     #    trivial stirs nearly vanish and only real movements stand out. Mostly-empty = mostly-still.
     #    Lazy import avoids a circular import (stats imports from this module).
-    from .stats import plot_movement_timeline, plot_heartbeat
+    from .stats import plot_movement_timeline, plot_heartbeat, plot_sleep_onset
     written.append(plot_movement_timeline(df, out_dir / "movement_timeline.png"))
 
     # 5. Heart rate (accel BCG) over the night — confidence-colored, faint below the trust bar.
     written.append(plot_heartbeat(df, out_dir / "heartbeat.png"))
+
+    # 6. Falling-asleep timeline — the restless run-up, the drift point, the settle point.
+    written.append(plot_sleep_onset(df, out_dir / "sleep_onset.png"))
 
     return written
 
