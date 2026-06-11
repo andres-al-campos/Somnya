@@ -465,25 +465,39 @@ def _heartbeat_series(df: pd.DataFrame, surf: pd.DataFrame):
 
 
 # Sleep-onset estimator. We have NO brain signal, so we can never see "asleep" directly — only the
-# BODY's correlates of falling asleep, which on real nights flip together at onset:
-#   1. Sustained stillness — awake-in-bed fidgets and repositions (immobility run keeps resetting to 0);
-#      sleep onset is when you go still and STAY still (the run lengthens and holds).
-#   2. Regular breathing — awake breathing is irregular (low breathing_confidence); it settles into a
-#      steady rhythm as you drift off (confidence rises and holds).
-# This is ESTIMATED with a RANGE, never a precise MEASURED timestamp: the body settling ≠ the brain
-# crossing into N1 (they differ by minutes), and the settling itself is gradual. We report the window
-# where both signals first agree, as a start-of-range, with "restless before" honesty.
-ONSET_IMMOBILITY_RUN = 8        # windows of unbroken stillness that mark "settled" (≈4 min at 30s win)
+# BODY's correlates of falling asleep:
+#   1. Sustained stillness — awake-in-bed fidgets (immobility run resets to 0); sleep = still & STAYS still.
+#   2. Regular breathing — awake breathing is irregular (low breathing_confidence); it steadies at onset.
+# THE VALIDATION (the part that makes "fell asleep" trustworthy) is a PERSISTENCE CRITERION borrowed
+# from clinical sleep scoring: a moment only counts as durable onset if sleep PERSISTS after it — here,
+# the next ONSET_PERSIST_MIN minutes must stay mostly still (movement in < ONSET_PERSIST_MOVED_FRAC of
+# windows). Movement is our highest-confidence (MEASURED) signal, so it's the right thing to validate
+# with. This cleanly separates "settled for good" from "a lull that didn't stick": on a hot/restless
+# night you may briefly doze (a DRIFT) then get pulled back out — only the run that holds is the SETTLE.
+# ESTIMATED, ± a few min (body settling ≠ brain N1).
+ONSET_IMMOBILITY_RUN = 8        # windows of unbroken stillness that mark a settling attempt (≈4 min @30s)
 ONSET_BREATH_CONF = 0.33        # breathing_confidence at/above which the rhythm reads as regular
-ONSET_HOLD_WINDOWS = 6          # the settled state must PERSIST this many windows (not a one-off lull)
+ONSET_PERSIST_MIN = 10.0        # sleep must persist this many minutes after onset (clinical ~10 min)
+ONSET_PERSIST_MOVED_FRAC = 0.05 # ...with movement in < this fraction of post-onset windows. STRICT by
+                                # design: "when did I fall asleep?" means "when did I STOP stirring",
+                                # not the clinical first-persistent-epoch (which tolerates arousals and
+                                # fires earlier than people feel). Near-zero stirring = actually down.
 
 
 def sleep_onset(surf: pd.DataFrame):
-    """Detect the two body-settling milestones of falling asleep. Returns (drift_min, settle_min, stirs)
-    or None when no settling occurs. Shared by the stat and the onset plot so they never disagree.
-      • drift  — first window that reads sleep-like quiet (sustained stillness + regular breathing)
-      • settle — first such quiet that HOLDS (scaled-down hold for short recordings → naps still report)
-    No brain signal exists, so these are the body's correlates, not EEG onset — ESTIMATED, ± a few min."""
+    """Detect when you fell asleep, validated by a clinical persistence criterion. Returns a dict
+    {drift_min, settle_min, stirs, confidence} or None. Shared by the stat and the plot so they agree.
+
+      • settle_min — the HEADLINE "fell asleep" time: the first settling attempt after which sleep
+        PERSISTS (next ONSET_PERSIST_MIN minutes stay < ONSET_PERSIST_MOVED_FRAC moved). This is the
+        durable onset — the moment that actually stuck.
+      • drift_min  — an EARLIER settling attempt that FAILED persistence (you briefly dozed, then got
+        pulled back out — e.g. too hot). None when onset stuck on the first try (no separate drift).
+      • confidence — how cleanly it resolved: high when calm held immediately and little stirring
+        preceded it; lower when onset was fitful (a drift→settle gap, lots of pre-onset stirs).
+
+    No brain signal exists, so this is the body's durable settling, not EEG onset — ESTIMATED, ± a few
+    min. The hold shrinks for short recordings so naps still validate."""
     if "immobility_run_length" not in surf.columns or not len(surf):
         return None
     s = surf.reset_index(drop=True)
@@ -491,28 +505,64 @@ def sleep_onset(surf: pd.DataFrame):
     mins = s["minutes"].to_numpy(dtype=float)
     bconf = (s["breathing_confidence"].to_numpy(dtype=float)
              if "breathing_confidence" in s.columns else np.zeros(len(s)))
+    moved = ((s["accel_activity_count"].to_numpy(dtype=float) >= MOVEMENT_THRESHOLD)
+             if "accel_activity_count" in s.columns else np.zeros(len(s), dtype=bool))
     n = len(s)
-    # "Settled" window = stillness run is long AND breathing reads regular.
-    settled = (imm >= ONSET_IMMOBILITY_RUN) & (np.nan_to_num(bconf) >= ONSET_BREATH_CONF)
-    if not settled.any():
+    # A settling ATTEMPT: stillness run is long AND breathing reads regular.
+    attempt = (imm >= ONSET_IMMOBILITY_RUN) & (np.nan_to_num(bconf) >= ONSET_BREATH_CONF)
+    if not attempt.any():
         return None
-    drift_idx = int(np.argmax(settled))  # first settled window at all
-    # SETTLED = first window that begins a HOLD. Hold scales down for short recordings, floor of 2.
-    hold = max(2, min(ONSET_HOLD_WINDOWS, n // 4))
-    settle_idx = drift_idx  # fallback: settled once but never held → report the drift point
-    for i in range(drift_idx, n - hold + 1):
-        if settled[i:i + hold].mean() >= 0.66:  # mostly-settled run (tolerates a blip)
+
+    total_min = float(mins[-1]) if n else 0.0
+    persist_min = min(ONSET_PERSIST_MIN, max(2.0, total_min / 4))  # shrink for naps, floor 2 min
+
+    def persists(i):
+        """Does sleep hold for persist_min after window i? (movement in < frac of those windows)."""
+        end_t = mins[i] + persist_min
+        j = int(np.searchsorted(mins, end_t))
+        seg = moved[i:max(i + 1, j)]
+        return len(seg) > 0 and seg.mean() < ONSET_PERSIST_MOVED_FRAC
+
+    # SETTLE = first attempt window whose sleep PERSISTS. (The validation that makes it trustworthy.)
+    settle_idx = None
+    for i in range(n):
+        if attempt[i] and persists(i):
             settle_idx = i
             break
-    stirs = (int((s.iloc[:max(1, settle_idx)]["accel_activity_count"] >= MOVEMENT_THRESHOLD).sum())
-             if "accel_activity_count" in s.columns else 0)
-    return float(mins[drift_idx]), float(mins[settle_idx]), stirs
+    if settle_idx is None:
+        # Settled at least once but never durably — report the last attempt, flag low confidence.
+        settle_idx = int(np.argmax(attempt))
+
+    # DRIFT = an earlier attempt that did NOT persist (a real-but-failed doze). Only if well before settle.
+    first_attempt = int(np.argmax(attempt))
+    drift_idx = first_attempt if (first_attempt < settle_idx and
+                                  mins[settle_idx] - mins[first_attempt] >= 3) else None
+
+    stirs = int(moved[:max(1, settle_idx)].sum())
+
+    # Confidence: starts high, docked for a fitful onset (drift→settle gap) and a restless run-up.
+    conf = 0.75
+    if drift_idx is not None:
+        gap = mins[settle_idx] - mins[drift_idx]
+        conf -= min(0.30, 0.02 * gap)        # longer "couldn't stay asleep" gap → less certain
+    conf -= min(0.20, 0.01 * stirs)          # more pre-onset stirring → less certain
+    if not (settle_idx < n and attempt[settle_idx] and persists(settle_idx)):
+        conf = min(conf, 0.35)               # never durably validated → cap low
+    conf = float(max(0.25, min(0.85, conf)))
+
+    return {
+        "drift_min": None if drift_idx is None else float(mins[drift_idx]),
+        "settle_min": float(mins[settle_idx]),
+        "stirs": stirs,
+        "confidence": conf,
+    }
 
 
 def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat:
-    """Time-to-fall-asleep, reported as TWO honest milestones that coincide on easy nights and diverge
-    on restless ones (drift = first sleep-like quiet, settle = first quiet that HOLDS). On a fitful
-    night the gap between them IS the story. ESTIMATED + range, never a precise timestamp."""
+    """Time-to-fall-asleep. Headline = the durable SETTLE point (validated by the persistence
+    criterion). When an earlier failed DRIFT exists (briefly dozed, got pulled back out), the detail
+    tells that story — the gap is "couldn't stay asleep". ESTIMATED, confidence reflects how cleanly
+    it resolved, never a precise timestamp."""
     if "immobility_run_length" not in surf.columns or not len(surf):
         return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
                     detail="need immobility + breathing signals — re-export from a fuller build")
@@ -521,17 +571,17 @@ def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat
         return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
                     detail="never settled into sustained sleep-like quiet — a restless night, "
                            "or onset is off the recorded window")
-    drift_min, settle_min, stirs = res
-    # Headline = the SETTLED time (conservative "asleep by"); surface drift in the detail.
-    if settle_min - drift_min >= 3:  # a real gap → fitful onset, the two-milestone story matters
-        detail = (f"started drifting ~{drift_min:.0f} min, solidly settled ~{settle_min:.0f} min "
-                  f"(kept getting disturbed: {stirs} stir(s) before settling; body-settling, "
-                  f"not brain onset — ± a few min)")
-    else:  # they coincide → clean onset, one number
-        detail = (f"settled into sleep-like quiet around min {settle_min:.0f} "
-                  f"(restless before: {stirs} stir(s); body-settling, not brain onset — ± a few min)")
+    drift_min, settle_min, stirs, conf = (res["drift_min"], res["settle_min"],
+                                          res["stirs"], res["confidence"])
+    if drift_min is not None:  # an earlier doze that didn't stick → the fitful-onset story
+        detail = (f"almost fell asleep ~{drift_min:.0f} min but kept stirring (couldn't stay down); "
+                  f"stopped stirring for good ~{settle_min:.0f} min "
+                  f"({stirs} stir(s) before. body-settling, not brain onset — ± a few min)")
+    else:  # onset stuck on the first try
+        detail = (f"stopped stirring and fell asleep around min {settle_min:.0f} "
+                  f"({stirs} stir(s) before. body-settling, not brain onset — ± a few min)")
     return Stat("sleep_onset_min", "Time to fall asleep", Tier.ESTIMATED,
-                settle_min, "min", confidence=0.5, detail=detail)
+                settle_min, "min", confidence=conf, detail=detail)
 
 
 def _heartbeat_stat(df: pd.DataFrame, surf: pd.DataFrame) -> Stat:
@@ -675,16 +725,19 @@ def plot_sleep_onset(df: pd.DataFrame, out_path):
         ax.axhline(MOVEMENT_THRESHOLD, color="#888", lw=0.7, ls=":", zorder=0)
 
     if res is not None:
-        drift_min, settle_min, stirs = res
+        drift_min, settle_min, stirs = res["drift_min"], res["settle_min"], res["stirs"]
         # Shade the pre-settle (falling-asleep) span — the time-to-sleep, bounded honestly.
         ax.axvspan(0, settle_min, color="#f1c40f", alpha=0.10, zorder=0,
                    label="falling asleep (time to settle)")
-        ax.axvline(drift_min, color="#27ae60", lw=1.4, ls="--", zorder=4,
-                   label=f"drifted ~{drift_min:.0f} min")
-        ax.axvline(settle_min, color="#1e8449", lw=2.2, zorder=4,
-                   label=f"settled ~{settle_min:.0f} min")
-        ax.set_title(f"Falling asleep — drifted ~{drift_min:.0f} min, settled ~{settle_min:.0f} min "
-                     f"({stirs} stir(s) before settling; body-settling, ± a few min)")
+        if drift_min is not None:  # an earlier doze that didn't stick
+            ax.axvline(drift_min, color="#e67e22", lw=1.4, ls="--", zorder=4,
+                       label=f"almost (didn't stay) ~{drift_min:.0f} min")
+        ax.axvline(settle_min, color="#1e8449", lw=2.4, zorder=4,
+                   label=f"fell asleep ~{settle_min:.0f} min")
+        title = (f"Falling asleep — almost ~{drift_min:.0f} min (kept stirring), then asleep "
+                 f"~{settle_min:.0f} min" if drift_min is not None
+                 else f"Falling asleep — asleep ~{settle_min:.0f} min")
+        ax.set_title(f"{title}  ({stirs} stir(s) before settling)")
     else:
         ax.text(0.5, 0.5, "no clear settling into sleep-like quiet (restless night, or off-window)",
                 transform=ax.transAxes, ha="center", va="center", fontsize=11, color="#888")
