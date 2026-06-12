@@ -17,6 +17,20 @@ struct SessionDetailView: View {
         SleepOnset.analyze(windows)
     }
 
+    /// Heart-rate track (accel BCG), two-pass harmonic-rejecting tracker. Empty on legacy 8 Hz nights
+    /// or when no confident track forms.
+    private var heartbeat: Heartbeat.Track {
+        Heartbeat.analyze(windows)
+    }
+
+    /// HR track points carrying an absolute time, for the chart's time axis.
+    private var heartbeatPoints: [(time: Date, bpm: Double, confidence: Double)] {
+        guard let t0 = windows.first?.startTime else { return [] }
+        return heartbeat.points.map {
+            (t0.addingTimeInterval($0.minute * 60), $0.bpm, $0.confidence)
+        }
+    }
+
     /// The "fell asleep" / "almost" times as Dates, for placing RuleMarks on the time-axis charts.
     private var onsetDates: (settle: Date, drift: Date?)? {
         guard case let .asleep(settleMin, driftMin, _, _) = onset,
@@ -47,6 +61,7 @@ struct SessionDetailView: View {
                     onsetCard
                     movementChart
                     breathingCard
+                    heartbeatCard
                     featureSummary
                 }
             }
@@ -200,6 +215,48 @@ struct SessionDetailView: View {
                 let avg = rates.reduce(0, +) / Double(rates.count)
                 stat("Avg breathing rate", String(format: "%.1f brpm", avg))
                 stat("Windows with breathing", "\(breathingWindows.count) / \(windows.count)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var heartbeatCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Heart rate over time")
+                .font(.headline)
+            let pts = heartbeatPoints
+            if pts.isEmpty {
+                Text("No heart-rate track this session. The accelerometer pulse (ballistocardiography) needs the body well-coupled to the mattress and a 32 Hz recording — older nights or poor coupling read nothing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Resting heart rate from the accelerometer (BCG). Color = confidence; gaps = windows with no clear pulse.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Chart {
+                    ForEach(Array(pts.enumerated()), id: \.offset) { _, p in
+                        PointMark(
+                            x: .value("Time", p.time),
+                            y: .value("BPM", p.bpm)
+                        )
+                        .foregroundStyle(by: .value("Confidence", p.confidence))
+                        .symbolSize(18)
+                    }
+                    onsetMarkers
+                }
+                .chartForegroundStyleScale(range: Gradient(colors: [.orange, .yellow, .green]))
+                .chartYScale(domain: Heartbeat.minBPM...Heartbeat.maxBPM)
+                .frame(height: 160)
+
+                if let med = heartbeat.medianBPM {
+                    stat("Resting heart rate", String(format: "≈ %.0f bpm", med))
+                }
+                stat("Windows tracked", "\(pts.count) / \(windows.count)")
+                Text("Estimated, not a medical reading — the pulse is a faint mechanical vibration through the mattress, so it's only read on the fraction of the night that coupled well.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
