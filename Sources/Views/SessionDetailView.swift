@@ -12,6 +12,20 @@ struct SessionDetailView: View {
         session.windows.sorted { $0.startTime < $1.startTime }
     }
 
+    /// When the user fell asleep (durable onset). Computed once; drives the card and the chart markers.
+    private var onset: SleepOnset.Result {
+        SleepOnset.analyze(windows)
+    }
+
+    /// The "fell asleep" / "almost" times as Dates, for placing RuleMarks on the time-axis charts.
+    private var onsetDates: (settle: Date, drift: Date?)? {
+        guard case let .asleep(settleMin, driftMin, _, _) = onset,
+              let t0 = windows.first?.startTime else { return nil }
+        let settle = t0.addingTimeInterval(settleMin * 60)
+        let drift = driftMin.map { t0.addingTimeInterval($0 * 60) }
+        return (settle, drift)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -30,6 +44,7 @@ struct SessionDetailView: View {
                 if windows.isEmpty {
                     emptyState
                 } else {
+                    onsetCard
                     movementChart
                     breathingCard
                     featureSummary
@@ -58,6 +73,70 @@ struct SessionDetailView: View {
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    // Onset marker palette — shared by the card and the chart RuleMarks so they read as one story.
+    private static let settleColor = Color(red: 0.118, green: 0.537, blue: 0.286)  // green "fell asleep"
+    private static let driftColor = Color(red: 0.902, green: 0.494, blue: 0.133)   // orange "almost"
+
+    @ViewBuilder
+    private var onsetCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Time to fall asleep")
+                .font(.headline)
+            switch onset {
+            case let .asleep(settleMin, driftMin, stirs, confidence):
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(Int(settleMin.rounded())) min")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .foregroundStyle(Self.settleColor)
+                    Text("to fall asleep")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                if let d = driftMin {
+                    Text("Almost dozed off around \(Int(d.rounded())) min, but kept stirring and couldn't stay down until ~\(Int(settleMin.rounded())) min.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text("Settled and stopped stirring fairly quickly.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                stat("Stirs before settling", "\(stirs)")
+                stat("Confidence", "\(Int((confidence * 100).rounded()))%")
+                Text("Estimated from when your body stopped stirring and breathing steadied — not a brain-onset measurement, so it's a rough ± a few minutes.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            case .neverSettled:
+                Text("No clear point where you settled into sustained sleep — a restless night, or sleep began after the recording ended.")
+                    .font(.callout).foregroundStyle(.secondary)
+            case .noSignal:
+                Text("Stillness-tracking wasn't recorded this night (older build). Record a night on the current build to see when you fell asleep.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// The green "fell asleep" (and orange "almost") RuleMarks, overlaid on any time-axis chart so the
+    /// onset story threads through movement + breathing — same single source of truth as the card.
+    @ChartContentBuilder
+    private var onsetMarkers: some ChartContent {
+        if let d = onsetDates {
+            if let drift = d.drift {
+                RuleMark(x: .value("Almost asleep", drift))
+                    .foregroundStyle(Self.driftColor)
+                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("almost").font(.caption2).foregroundStyle(Self.driftColor)
+                    }
+            }
+            RuleMark(x: .value("Fell asleep", d.settle))
+                .foregroundStyle(Self.settleColor)
+                .lineStyle(StrokeStyle(lineWidth: 1.8))
+                .annotation(position: .top, alignment: .leading) {
+                    Text("fell asleep").font(.caption2).foregroundStyle(Self.settleColor)
+                }
+        }
+    }
+
     private var movementChart: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Movement over time")
@@ -65,12 +144,15 @@ struct SessionDetailView: View {
             Text("Accelerometer activity per 30s window — higher = more movement (likely awake/restless).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Chart(windows) { w in
-                AreaMark(
-                    x: .value("Time", w.startTime),
-                    y: .value("Activity", w.accelActivityCount)
-                )
-                .foregroundStyle(.indigo.opacity(0.6))
+            Chart {
+                ForEach(windows) { w in
+                    AreaMark(
+                        x: .value("Time", w.startTime),
+                        y: .value("Activity", w.accelActivityCount)
+                    )
+                    .foregroundStyle(.indigo.opacity(0.6))
+                }
+                onsetMarkers
             }
             .frame(height: 160)
         }
@@ -96,18 +178,21 @@ struct SessionDetailView: View {
                 Text("Estimated breaths per minute per 30s window (from the mic loudness envelope). Gaps = windows with no clear rhythm.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Chart(breathingWindows) { w in
-                    LineMark(
-                        x: .value("Time", w.startTime),
-                        y: .value("Breaths/min", w.breathingRate ?? 0)
-                    )
-                    .foregroundStyle(.teal)
-                    PointMark(
-                        x: .value("Time", w.startTime),
-                        y: .value("Breaths/min", w.breathingRate ?? 0)
-                    )
-                    .foregroundStyle(.teal.opacity(0.5))
-                    .symbolSize(8)
+                Chart {
+                    ForEach(breathingWindows) { w in
+                        LineMark(
+                            x: .value("Time", w.startTime),
+                            y: .value("Breaths/min", w.breathingRate ?? 0)
+                        )
+                        .foregroundStyle(.teal)
+                        PointMark(
+                            x: .value("Time", w.startTime),
+                            y: .value("Breaths/min", w.breathingRate ?? 0)
+                        )
+                        .foregroundStyle(.teal.opacity(0.5))
+                        .symbolSize(8)
+                    }
+                    onsetMarkers
                 }
                 .frame(height: 160)
 
