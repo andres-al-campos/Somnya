@@ -326,12 +326,13 @@ def _breathing_stats(surf: pd.DataFrame) -> list[Stat]:
                         detail="no breathing data in this session (mic off or pre-analyzer)"))
         return out
 
-    # Scope to confirmed sleep (post-onset). Falls back to the whole on-bed period if onset is unknown.
+    # Scope to confirmed sleep (post-onset). Falls back to the whole on-bed period when onset is unknown
+    # (never settled, or no stillness signal on an older recording).
     onset = sleep_onset(surf)
     s = surf.reset_index(drop=True)
-    if onset is not None:
+    if isinstance(onset, dict):
         s = s[s["minutes"] >= onset["settle_min"]].reset_index(drop=True)
-    scope = "asleep" if onset is not None else "on-bed"
+    scope = "asleep" if isinstance(onset, dict) else "on-bed"
     n_surf = len(s)
     if n_surf == 0:
         out.append(Stat("breathing_rate_bpm", "Breathing rate", Tier.GUESSED, None,
@@ -567,7 +568,7 @@ def sleep_onset(surf: pd.DataFrame):
     No brain signal exists, so this is the body's durable settling, not EEG onset — ESTIMATED, ± a few
     min. The hold shrinks for short recordings so naps still validate."""
     if "immobility_run_length" not in surf.columns or not len(surf):
-        return None
+        return "no_signal"
     s = surf.reset_index(drop=True)
     imm = s["immobility_run_length"].to_numpy(dtype=float)
     mins = s["minutes"].to_numpy(dtype=float)
@@ -576,6 +577,11 @@ def sleep_onset(surf: pd.DataFrame):
     moved = ((s["accel_activity_count"].to_numpy(dtype=float) >= MOVEMENT_THRESHOLD)
              if "accel_activity_count" in s.columns else np.zeros(len(s), dtype=bool))
     n = len(s)
+    # The immobility-run counter never incrementing across the whole night means stillness-tracking
+    # wasn't recorded (pre-feature build) — NOT that you never lay still. Distinguish "no signal" from
+    # "genuinely never settled" so the caller can be honest (a missing-data note, not "you never slept").
+    if np.nanmax(imm) < ONSET_IMMOBILITY_RUN:
+        return "no_signal"
     # A settling ATTEMPT: stillness run is long AND breathing reads regular.
     attempt = (imm >= ONSET_IMMOBILITY_RUN) & (np.nan_to_num(bconf) >= ONSET_BREATH_CONF)
     if not attempt.any():
@@ -634,8 +640,8 @@ def mark_sleep_onset(ax, surf: pd.DataFrame, *, label=True, shade=False):
     `label` controls whether the lines carry legend labels (off for charts that already have a busy
     legend). Single source of truth = sleep_onset(), so every chart agrees with the stat."""
     res = sleep_onset(surf)
-    if res is None:
-        return res
+    if not isinstance(res, dict):  # None (never settled) or "no_signal" (no stillness data) → nothing to draw
+        return None
     settle, drift = res["settle_min"], res["drift_min"]
     if shade:
         ax.axvspan(0, settle, color="#f1c40f", alpha=0.06, zorder=0)
@@ -652,14 +658,15 @@ def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat
     criterion). When an earlier failed DRIFT exists (briefly dozed, got pulled back out), the detail
     tells that story — the gap is "couldn't stay asleep". ESTIMATED, confidence reflects how cleanly
     it resolved, never a precise timestamp."""
-    if "immobility_run_length" not in surf.columns or not len(surf):
-        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
-                    detail="need immobility + breathing signals — re-export from a fuller build")
     res = sleep_onset(surf)
+    if res == "no_signal":
+        return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
+                    detail="stillness-tracking wasn't recorded this night (older build) — "
+                           "re-record on the current build to get onset")
     if res is None:
         return Stat("sleep_onset_min", "Time to fall asleep", Tier.GUESSED, None,
-                    detail="never settled into sustained sleep-like quiet — a restless night, "
-                           "or onset is off the recorded window")
+                    detail="never settled into sustained sleep-like quiet — a genuinely restless "
+                           "night, or onset is off the recorded window")
     drift_min, settle_min, stirs, conf = (res["drift_min"], res["settle_min"],
                                           res["stirs"], res["confidence"])
     if drift_min is not None:  # an earlier doze that didn't stick → the fitful-onset story
@@ -815,7 +822,7 @@ def plot_sleep_onset(df: pd.DataFrame, out_path):
         ax.fill_between(mins, act, color="indigo", alpha=0.35, lw=0, label="movement (stirs)")
         ax.axhline(MOVEMENT_THRESHOLD, color="#888", lw=0.7, ls=":", zorder=0)
 
-    if res is not None:
+    if isinstance(res, dict):
         drift_min, settle_min, stirs = res["drift_min"], res["settle_min"], res["stirs"]
         # Shade the pre-settle (falling-asleep) span — the time-to-sleep, bounded honestly.
         ax.axvspan(0, settle_min, color="#f1c40f", alpha=0.10, zorder=0,
@@ -830,8 +837,11 @@ def plot_sleep_onset(df: pd.DataFrame, out_path):
                  else f"Falling asleep — asleep ~{settle_min:.0f} min")
         ax.set_title(f"{title}  ({stirs} stir(s) before settling)")
     else:
-        ax.text(0.5, 0.5, "no clear settling into sleep-like quiet (restless night, or off-window)",
-                transform=ax.transAxes, ha="center", va="center", fontsize=11, color="#888")
+        msg = ("stillness-tracking wasn't recorded this night (older build)" if res == "no_signal"
+               else "no clear settling into sleep-like quiet (restless night, or off-window)")
+        ax.text(0.5, 0.5, msg, transform=ax.transAxes, ha="center", va="center",
+                fontsize=11, color="#888")
+        ax.set_title("Falling asleep — not available this night")
         ax.set_title("Falling asleep — no clear onset detected")
 
     ax.set(ylabel="activity")
