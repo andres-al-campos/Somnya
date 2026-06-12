@@ -626,6 +626,27 @@ def sleep_onset(surf: pd.DataFrame):
     }
 
 
+def mark_sleep_onset(ax, surf: pd.DataFrame, *, label=True, shade=False):
+    """Draw the "fell asleep" reference markers on ANY chart's axis, so the onset story threads through
+    the movement / HR / breathing views — you can see e.g. that HR settled right at the green line.
+    Green solid = fell asleep (durable settle); orange dashed = "almost" (an earlier doze that didn't
+    stick). No-op when onset is unknown. `shade` optionally dims the pre-onset (falling-asleep) span;
+    `label` controls whether the lines carry legend labels (off for charts that already have a busy
+    legend). Single source of truth = sleep_onset(), so every chart agrees with the stat."""
+    res = sleep_onset(surf)
+    if res is None:
+        return res
+    settle, drift = res["settle_min"], res["drift_min"]
+    if shade:
+        ax.axvspan(0, settle, color="#f1c40f", alpha=0.06, zorder=0)
+    if drift is not None:
+        ax.axvline(drift, color="#e67e22", lw=1.1, ls="--", alpha=0.8, zorder=2,
+                   label=(f"almost asleep ~{drift:.0f}m" if label else None))
+    ax.axvline(settle, color="#1e8449", lw=1.8, alpha=0.9, zorder=2,
+               label=(f"fell asleep ~{settle:.0f}m" if label else None))
+    return res
+
+
 def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat:
     """Time-to-fall-asleep. Headline = the durable SETTLE point (validated by the persistence
     criterion). When an earlier failed DRIFT exists (briefly dozed, got pulled back out), the detail
@@ -760,6 +781,8 @@ def plot_heartbeat(df: pd.DataFrame, out_path):
     ax.set_ylim(HEART_MIN_BPM, HEART_MAX_BPM)
     ax.set(title="Heart rate (accel BCG) — red = tracked heartbeat, grey = rejected harmonic candidates",
            ylabel="bpm")
+    if mark_sleep_onset(ax, surf):  # show when sleep began — HR often settles right at this line
+        ax.legend(loc="upper right", fontsize=8)
     set_hours_axis(ax, xmax)
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
@@ -887,7 +910,9 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
            ylabel="movement intensity\n(activity index)")
     from . import set_hours_axis  # shared hours x-axis (lazy import avoids circular import)
     set_hours_axis(ax, xmax)
-    if "on_surface" in df.columns and not df["on_surface"].all():
+    # The "fell asleep" line: movement visibly calms right at it — the clearest place to show the marker.
+    onset = mark_sleep_onset(ax, _surface_only(df))
+    if ("on_surface" in df.columns and not df["on_surface"].all()) or onset:
         ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)

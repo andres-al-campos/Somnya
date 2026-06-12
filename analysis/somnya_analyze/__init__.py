@@ -572,10 +572,13 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     written: list[Path] = []
     total_min = float(df["minutes"].iloc[-1])
 
-    # 1. Movement timeline.
+    # 1. Movement (raw activity fill).
+    from .stats import mark_sleep_onset
     fig, ax = plt.subplots(figsize=(10, 3.2))
     ax.fill_between(df["minutes"], df["accel_activity_count"], color="indigo", alpha=0.6)
     ax.set(title="Movement (accel activity count) per 30s window", ylabel="activity")
+    if mark_sleep_onset(ax, _surface_only(df)):  # movement visibly drops at the fell-asleep line
+        ax.legend(loc="upper right", fontsize=8)
     set_hours_axis(ax, total_min)
     p = out_dir / "movement.png"
     fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
@@ -619,6 +622,9 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
         fig.colorbar(sm, ax=ax, label="confidence", pad=0.01)
         ax.set(title="Breathing rate — bright = confident, faint = unsure attempt, gaps = no reading",
                ylabel="brpm", ylim=(0, 32))
+        from .stats import mark_sleep_onset  # the "fell asleep" line — breathing steadies right at it
+        if mark_sleep_onset(ax, _surface_only(df)):
+            ax.legend(loc="upper right", fontsize=8)
         set_hours_axis(ax, total_min)
         p = out_dir / "breathing.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
