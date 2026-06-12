@@ -90,11 +90,15 @@ LARGE_MOVEMENT_THRESHOLD = 1.5  # small (sheets/twitch) vs large (roll/repositio
                                 # then a clear gap to the big ones (2.3, 2.6, 9, 10.6). Intensity
                                 # only — NOT a semantic "roll-over" claim (that needs gravity flip).
 BREATHING_KEEP_CONF = 0.30      # SomnyaConfig.breathingMinConfidence
-# Multi-scale breathing recovery: a 30s window holds only ~7 breaths @15brpm — often too few for the
-# autocorrelation to confirm the rhythm (peak < keep bar). Concatenating neighbours into a ~90s window
-# (~22 breaths) recovers ~70% of those failures at the SAME rate (verified: median 16.0 brpm either
-# way), with no harmonic risk (breathing is a smooth near-sinusoid, not a sharp pulse like the BCG).
-BREATHING_RECOVER_WINDOWS = 3   # neighbours to concatenate (±1) for the ~90s recovery pass
+# Adaptive multi-scale breathing recovery: a 30s window holds only ~7 breaths @15brpm — often too few
+# for the autocorrelation to confirm the rhythm (peak < keep bar). Concatenating neighbours into a
+# longer window (~22 breaths @90s) recovers those failures at the SAME rate (verified median 16.0 brpm
+# either way), no harmonic risk (breathing is a smooth near-sinusoid, not a sharp BCG pulse). A
+# window-size sweep showed plain longer windows trade coverage for accuracy — a 270s window recovers
+# more but BLURS the rate (breathing drifts across it). So we ESCALATE only as needed: try radius 1
+# (~90s) first, grow to radius BREATHING_RECOVER_MAX_RADIUS only if still failing. Calm windows clear
+# short & accurate; only stubborn ones grow → ~150s coverage at ~90s accuracy.
+BREATHING_RECOVER_MAX_RADIUS = 2  # max neighbours each side (radius 1=~90s, 2=~150s) before giving up
 HEARTBEAT_TRUST_BAR = 0.40      # STATS_SPEC heartbeat trust bar
 MIN_CONFIDENT_FOR_REGULARITY = 6  # need enough confident windows for a std to mean anything
 
@@ -278,10 +282,11 @@ def compute_sleep_stats(df: pd.DataFrame) -> list[Stat]:
 
 
 def _breathing_recover(s: pd.DataFrame, conf):
-    """Multi-scale recovery pass. For each window that FAILED the confidence bar, retry on a ~90s
-    concatenation of it + neighbours (more breaths → the autocorrelation can confirm the rhythm). Fills
-    in recovered (rate, conf) in place. Returns (rates, confs) arrays aligned to s, with recoveries
-    merged. No-op when the per-window audio envelope isn't stored."""
+    """Adaptive multi-scale recovery pass. For each window that FAILED the confidence bar, retry on a
+    longer neighbour-concatenation, ESCALATING the radius (1→…→BREATHING_RECOVER_MAX_RADIUS) only until
+    it clears — so calm windows recover at the short, accurate ~90s scale and only stubborn ones grow.
+    Fills recovered (rate, conf) in place. Returns (rates, confs) aligned to s. No-op when the per-window
+    audio envelope isn't stored."""
     rates = s["breathing_rate_bpm"].to_numpy(dtype=float).copy()
     confs = np.nan_to_num(s["breathing_confidence"].to_numpy(dtype=float)).copy()
     env_col = "filtered_envelope" if "filtered_envelope" in s.columns else (
@@ -289,19 +294,20 @@ def _breathing_recover(s: pd.DataFrame, conf):
     if env_col is None:
         return rates, confs
     hz = 4.0  # audio_envelope_hz; the breathing envelope rate
-    half = BREATHING_RECOVER_WINDOWS // 2
     envs = s[env_col].tolist()
     n = len(s)
     for i in range(n):
         if confs[i] >= BREATHING_KEEP_CONF:
             continue  # already confident — leave it
-        parts = [np.asarray(envs[j], float) for j in range(i - half, i + half + 1)
-                 if 0 <= j < n and isinstance(envs[j], list) and envs[j]]
-        if not parts:
-            continue
-        r, c = _estimate_breathing(np.concatenate(parts), hz)
-        if r is not None and c >= BREATHING_KEEP_CONF and BREATHING_MIN_BPM <= r <= BREATHING_MAX_BPM:
-            rates[i], confs[i] = r, c  # recovered at the longer scale
+        for radius in range(1, BREATHING_RECOVER_MAX_RADIUS + 1):  # grow only as far as needed
+            parts = [np.asarray(envs[j], float) for j in range(i - radius, i + radius + 1)
+                     if 0 <= j < n and isinstance(envs[j], list) and envs[j]]
+            if not parts:
+                continue
+            r, c = _estimate_breathing(np.concatenate(parts), hz)
+            if r is not None and c >= BREATHING_KEEP_CONF and BREATHING_MIN_BPM <= r <= BREATHING_MAX_BPM:
+                rates[i], confs[i] = r, c  # recovered at the smallest scale that worked
+                break
     return rates, confs
 
 
