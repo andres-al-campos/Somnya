@@ -15,6 +15,10 @@ import Foundation
 ///      with the anchor (coverage with the anchor's truth filtering false positives).
 enum Heartbeat {
 
+    /// Bump when the HR algorithm changes — a cached result tagged with an older version is treated as
+    /// stale and recomputed. Pair with `SleepOnset.algoVersion` to form the cache's validity key.
+    static let algoVersion = "hr-1"
+
     // Tuning — mirrors the Python constants exactly.
     static let minBPM = 40.0
     static let maxBPM = 120.0
@@ -62,8 +66,12 @@ enum Heartbeat {
         let band = bandpassBPM(stream, hz: hz, lowBPM: minBPM, highBPM: maxBPM)
 
         // PASS 1 — anchor, seeded from the night-wide median fundamental.
-        let seed = globalSeed(band, hz: hz, winS: anchorWindowS)
-        let anchor = anchorTrack(band, times: times, hz: hz, winS: anchorWindowS, seed: seed)
+        // The seed and the track walk the IDENTICAL 120s windows and both need each window's
+        // autocorrelation peaks — the most expensive op (O(samples·lags)). Compute the per-window
+        // peaks ONCE here and share them, instead of autocorrelating every anchor window twice.
+        let anchorPeaks = windowPeaks(band, hz: hz, winS: anchorWindowS)
+        let seed = globalSeed(anchorPeaks)
+        let anchor = anchorTrack(anchorPeaks, times: times, hz: hz, winS: anchorWindowS, seed: seed)
         guard anchor.count >= 1 else { return Track(points: []) }
         if anchor.count == 1 { return Track(points: anchor) }  // nothing to interpolate against
 
@@ -106,21 +114,37 @@ enum Heartbeat {
         return Track(points: merged)
     }
 
-    // MARK: - Slew-limited anchor track
+    // MARK: - Per-window peaks (shared by seed + anchor)
 
-    private static func anchorTrack(_ band: [Double], times: [Double], hz: Double,
-                                    winS: Double, seed: Double?) -> [Point] {
+    /// One anchor window's autocorrelation result: its start sample index and its peaks (bpm, corr).
+    /// Precomputed once so `globalSeed` and `anchorTrack` don't each re-autocorrelate the same windows.
+    private struct WindowPeaks { let start: Int; let peaks: [(Double, Double)] }
+
+    private static func windowPeaks(_ band: [Double], hz: Double, winS: Double) -> [WindowPeaks] {
         let n = Int(winS * hz)
         guard n >= 4, band.count >= n else { return [] }
+        var out: [WindowPeaks] = []
+        var start = 0
+        while start + n <= band.count {
+            out.append(WindowPeaks(start: start, peaks: allPeaks(Array(band[start..<start + n]), hz: hz)))
+            start += n
+        }
+        return out
+    }
+
+    // MARK: - Slew-limited anchor track
+
+    private static func anchorTrack(_ windows: [WindowPeaks], times: [Double], hz: Double,
+                                    winS: Double, seed: Double?) -> [Point] {
+        let n = Int(winS * hz)
+        guard n >= 4 else { return [] }
         var out: [Point] = []
         var cur = seed
         var lastMin: Double?
-        var start = 0
-        while start + n <= band.count {
-            defer { start += n }
+        for win in windows {
+            let start = win.start
             let minute = times[start + n / 2]
-            let peaks = allPeaks(Array(band[start..<start + n]), hz: hz)
-            let cands = peaks.filter { $0.1 >= trustBar && $0.0 >= minBPM && $0.0 <= maxBPM }
+            let cands = win.peaks.filter { $0.1 >= trustBar && $0.0 >= minBPM && $0.0 <= maxBPM }
             guard !cands.isEmpty else { continue }
 
             guard let curVal = cur else {
@@ -159,15 +183,11 @@ enum Heartbeat {
     }
 
     /// Robust starting HR: the median of each long window's best fundamental across the whole night.
-    private static func globalSeed(_ band: [Double], hz: Double, winS: Double) -> Double? {
-        let n = Int(winS * hz)
-        guard n >= 4, band.count >= n else { return nil }
+    /// Reads the precomputed per-window peaks (same windows the anchor track uses).
+    private static func globalSeed(_ windows: [WindowPeaks]) -> Double? {
         var fundamentals: [Double] = []
-        var start = 0
-        while start + n <= band.count {
-            defer { start += n }
-            let peaks = allPeaks(Array(band[start..<start + n]), hz: hz)
-                .filter { $0.1 >= trustBar && $0.0 >= minBPM && $0.0 <= maxBPM }
+        for win in windows {
+            let peaks = win.peaks.filter { $0.1 >= trustBar && $0.0 >= minBPM && $0.0 <= maxBPM }
             guard !peaks.isEmpty else { continue }
             let top = peaks[0].1
             let strong = peaks.filter { $0.1 >= top * 0.8 }.map(\.0)
