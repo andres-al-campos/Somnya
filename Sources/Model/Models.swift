@@ -53,6 +53,10 @@ final class SleepSession {
     var notes: String?
     /// Optional subjective restedness (1-3 faces). A *correlate* only — never training data.
     var restednessRating: Int?
+    /// When this session was last exported to JSON. nil = never exported. Drives "export new" so a
+    /// batch export skips nights already pulled to the Mac. It's the app's belief, not a Mac receipt —
+    /// if the files are lost on the Mac, "export all" re-exports regardless of this stamp.
+    var exportedAt: Date?
 
     @Relationship var day: SleepDay?
     @Relationship(deleteRule: .cascade, inverse: \SensorWindow.session)
@@ -83,6 +87,7 @@ final class SleepSession {
         self.tags = []
         self.notes = nil
         self.restednessRating = nil
+        self.exportedAt = nil
         self.windows = []
         self.phases = []
         self.analysisCache = nil

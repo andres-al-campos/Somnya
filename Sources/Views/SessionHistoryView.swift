@@ -7,6 +7,21 @@ struct SessionHistoryView: View {
     @Query(sort: \SleepSession.startTime, order: .reverse) private var sessions: [SleepSession]
     @Environment(\.modelContext) private var context
 
+    @State private var exportItem: ExportFile?
+    @State private var exportError: String?
+
+    /// `sheet(item:)` wrapper — driving presentation off the payload avoids the empty-panel race where
+    /// the sheet opens before the file URL is committed. Same pattern as RawDataView.
+    private struct ExportFile: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+
+    /// Finished sessions only — an active (still-recording) night is still gaining windows, so exporting
+    /// it would ship an incomplete file and falsely mark it done.
+    private var exportable: [SleepSession] { sessions.filter { !$0.isActive } }
+    private var unexported: [SleepSession] { exportable.filter { $0.exportedAt == nil } }
+
     var body: some View {
         Group {
             if sessions.isEmpty {
@@ -30,6 +45,55 @@ struct SessionHistoryView: View {
         }
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        export(unexported)
+                    } label: {
+                        Label("Export new (\(unexported.count))", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(unexported.isEmpty)
+
+                    Button {
+                        export(exportable)
+                    } label: {
+                        Label("Export all (\(exportable.count))", systemImage: "square.and.arrow.up.on.square")
+                    }
+                    .disabled(exportable.isEmpty)
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .disabled(exportable.isEmpty)
+            }
+        }
+        .sheet(item: $exportItem) { item in
+            ShareSheet(items: [item.url])
+        }
+        .alert("Export failed", isPresented: .constant(exportError != nil)) {
+            Button("OK") { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
+    }
+
+    /// Zip the given sessions into one archive, present the share sheet, and stamp `exportedAt` so a
+    /// later "export new" skips them. Stamping happens once the zip is built (we can't see the Mac);
+    /// "export all" re-exports regardless, which is the recovery path if the Mac copies are ever lost.
+    private func export(_ toExport: [SleepSession]) {
+        guard !toExport.isEmpty else { return }
+        do {
+            let result = try SessionJSON.writeZip(for: toExport)
+            let now = Date()
+            for s in result.included { s.exportedAt = now }
+            try? context.save()
+            if !result.failed.isEmpty {
+                SomnyaLog.lifecycle("Export: \(result.failed.count) session(s) skipped (serialize failed)")
+            }
+            exportItem = ExportFile(url: result.url)
+        } catch {
+            exportError = "Couldn't build the export: \(error.localizedDescription) Free up storage and try again."
+        }
     }
 
     private func row(for session: SleepSession) -> some View {
@@ -41,6 +105,13 @@ struct SessionHistoryView: View {
                     Text("ACTIVE")
                         .font(.caption2.bold())
                         .foregroundStyle(.green)
+                }
+                Spacer()
+                if session.exportedAt != nil {
+                    Image(systemName: "checkmark.icloud")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Exported")
                 }
             }
             HStack(spacing: 12) {
