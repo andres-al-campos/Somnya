@@ -59,6 +59,10 @@ final class SleepSession {
     var windows: [SensorWindow]
     @Relationship(deleteRule: .cascade, inverse: \SleepPhase.session)
     var phases: [SleepPhase]
+    /// Cached derived analyses (onset + HR track) so reopening a finished night is instant. Cascade so
+    /// deleting the session removes its snapshot; recomputed automatically when the algorithm version bumps.
+    @Relationship(deleteRule: .cascade, inverse: \SessionAnalysisCache.session)
+    var analysisCache: SessionAnalysisCache?
 
     var detectionMethod: DetectionMethod {
         get { DetectionMethod(rawValue: detectionMethodRaw) ?? .manual }
@@ -81,6 +85,7 @@ final class SleepSession {
         self.restednessRating = nil
         self.windows = []
         self.phases = []
+        self.analysisCache = nil
     }
 }
 

@@ -16,6 +16,9 @@ import Foundation
 /// `.noSignal` (stillness-tracking wasn't recorded — older build; don't claim the user never slept).
 enum SleepOnset {
 
+    /// Bump when the onset algorithm changes so cached results recompute. See `Heartbeat.algoVersion`.
+    static let algoVersion = "onset-1"
+
     /// Tuning — mirrors the Python constants exactly.
     static let immobilityRun = 8            // windows of unbroken stillness that mark a settling attempt
     static let breathConf = 0.33            // breathingConfidence at/above which the rhythm reads regular

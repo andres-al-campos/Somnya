@@ -12,7 +12,8 @@ struct SomnyaApp: App {
         // so the failure is diagnosable, per the debug-everything principle.
         do {
             let container = try ModelContainer(
-                for: SleepDay.self, SleepSession.self, SleepPhase.self, SensorWindow.self
+                for: SleepDay.self, SleepSession.self, SleepPhase.self, SensorWindow.self,
+                SessionAnalysisCache.self
             )
             self.modelContainer = container
             self.startupError = nil

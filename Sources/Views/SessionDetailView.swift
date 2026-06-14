@@ -7,20 +7,31 @@ import Charts
 /// that's post-MVP. This proves the captured data is real and inspectable.
 struct SessionDetailView: View {
     let session: SleepSession
+    @Environment(\.modelContext) private var modelContext
+
+    /// The heavy analyses (onset + the BCG filtfilt over the whole night) are expensive enough that
+    /// running them on every SwiftUI body re-evaluation froze the screen for seconds. They run ONCE per
+    /// session in `.task` and the rendered view reads this bundle. Better still, the result is PERSISTED
+    /// to SwiftData (`SessionAnalysisCache`), so reopening a finished night skips the compute entirely.
+    /// `nil` = still loading (we show a spinner); empty results render their honest "no data" states.
+    private struct Analysis {
+        let onset: SleepOnset.Result
+        let heartbeat: Heartbeat.Track
+    }
+    @State private var analysis: Analysis?
 
     private var windows: [SensorWindow] {
         session.windows.sorted { $0.startTime < $1.startTime }
     }
 
-    /// When the user fell asleep (durable onset). Computed once; drives the card and the chart markers.
+    /// When the user fell asleep (durable onset) — from the cached bundle once ready.
     private var onset: SleepOnset.Result {
-        SleepOnset.analyze(windows)
+        analysis?.onset ?? .noSignal
     }
 
-    /// Heart-rate track (accel BCG), two-pass harmonic-rejecting tracker. Empty on legacy 8 Hz nights
-    /// or when no confident track forms.
+    /// Heart-rate track (accel BCG), two-pass harmonic-rejecting tracker — from the cached bundle.
     private var heartbeat: Heartbeat.Track {
-        Heartbeat.analyze(windows)
+        analysis?.heartbeat ?? Heartbeat.Track(points: [])
     }
 
     /// HR track points carrying an absolute time, for the chart's time axis.
@@ -29,6 +40,21 @@ struct SessionDetailView: View {
         return heartbeat.points.map {
             (t0.addingTimeInterval($0.minute * 60), $0.bpm, $0.confidence)
         }
+    }
+
+    /// A tight y-range fitted to the actual BPM spread (not the full 40–120 detector band, which left
+    /// most of the chart empty and squashed the real variation). Pads ~6 bpm each side for breathing
+    /// room and rounds to a clean step; falls back to the detector band when there's no data.
+    private var heartbeatYDomain: ClosedRange<Double> {
+        let bpms = heartbeat.points.map(\.bpm)
+        guard let lo = bpms.min(), let hi = bpms.max() else {
+            return Heartbeat.minBPM...Heartbeat.maxBPM
+        }
+        let pad = 6.0
+        let low = max(Heartbeat.minBPM, (lo - pad / 2).rounded(.down))
+        let high = min(Heartbeat.maxBPM, (hi + pad).rounded(.up))
+        // Guarantee a sane minimum span so a flat night still reads on a sensible scale.
+        return low < high - 8 ? low...high : low...(low + 16)
     }
 
     /// The "fell asleep" / "almost" times as Dates, for placing RuleMarks on the time-axis charts.
@@ -57,6 +83,8 @@ struct SessionDetailView: View {
 
                 if windows.isEmpty {
                     emptyState
+                } else if analysis == nil {
+                    analyzingState
                 } else {
                     onsetCard
                     movementChart
@@ -70,6 +98,57 @@ struct SessionDetailView: View {
         .navigationTitle(session.startTime.formatted(date: .abbreviated, time: .shortened))
         .navigationBarTitleDisplayMode(.inline)
         .background(Color.black.opacity(0.94))
+        .task(id: session.id) {
+            guard !windows.isEmpty, analysis == nil else { return }
+
+            // 1. Fast path — a fresh persisted snapshot means we never touch the autocorrelation.
+            if let cache = session.analysisCache, !cache.isStale {
+                analysis = Analysis(onset: cache.onset, heartbeat: cache.heartbeat)
+                return
+            }
+
+            // 2. Slow path — compute once. We deliberately stay on the main actor: SensorWindow is a
+            // SwiftData @Model bound to its ModelContext's thread and isn't Sendable, so touching it
+            // off-main would be a data race. A yield first lets the spinner paint before the work.
+            await Task.yield()
+            let snapshot = windows
+            let onset = SleepOnset.analyze(snapshot)
+            let heartbeat = Heartbeat.analyze(snapshot)
+            analysis = Analysis(onset: onset, heartbeat: heartbeat)
+
+            // 3. Persist for instant reopens — but only for FINISHED sessions. An active session will
+            // gain more windows, which would silently invalidate a stored snapshot; recompute those.
+            guard session.endTime != nil else { return }
+            persistAnalysis(heartbeat: heartbeat, onset: onset)
+        }
+    }
+
+    /// Store the computed analyses on the session so the next open is instant. Replaces any stale
+    /// snapshot. Failures here are non-fatal — worst case we just recompute next time, so we log and
+    /// move on rather than disturbing the view.
+    private func persistAnalysis(heartbeat: Heartbeat.Track, onset: SleepOnset.Result) {
+        if let old = session.analysisCache {
+            modelContext.delete(old)  // cascade-owned; replace rather than mutate-in-place
+        }
+        let cache = SessionAnalysisCache.from(heartbeat: heartbeat, onset: onset)
+        cache.session = session
+        session.analysisCache = cache
+        modelContext.insert(cache)
+        do {
+            try modelContext.save()
+        } catch {
+            SomnyaLog.lifecycle("Analysis cache save failed (will recompute next open): \(error)")
+        }
+    }
+
+    private var analyzingState: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("Analyzing the night…")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
 
     private var header: some View {
@@ -139,17 +218,31 @@ struct SessionDetailView: View {
                 RuleMark(x: .value("Almost asleep", drift))
                     .foregroundStyle(Self.driftColor)
                     .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
-                    .annotation(position: .top, alignment: .leading) {
-                        Text("almost").font(.caption2).foregroundStyle(Self.driftColor)
+                    .annotation(position: .top, alignment: .leading, spacing: 2,
+                                overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        onsetLabel("almost", Self.driftColor)
                     }
             }
             RuleMark(x: .value("Fell asleep", d.settle))
                 .foregroundStyle(Self.settleColor)
                 .lineStyle(StrokeStyle(lineWidth: 1.8))
-                .annotation(position: .top, alignment: .leading) {
-                    Text("fell asleep").font(.caption2).foregroundStyle(Self.settleColor)
+                .annotation(position: .top, alignment: .leading, spacing: 2,
+                            overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                    onsetLabel("fell asleep", Self.settleColor)
                 }
         }
+    }
+
+    /// A small pill-backed marker label. The background keeps it legible where it sits just above the
+    /// plot, and `position: .top` with a tight `spacing` keeps it from colliding with the card's
+    /// description text above the chart.
+    private func onsetLabel(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.black.opacity(0.55), in: Capsule())
     }
 
     private var movementChart: some View {
@@ -170,6 +263,7 @@ struct SessionDetailView: View {
                 onsetMarkers
             }
             .frame(height: 160)
+            .padding(.top, 14)  // headroom so the onset label sits above the plot, not over the caption
         }
         .padding()
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
@@ -210,6 +304,7 @@ struct SessionDetailView: View {
                     onsetMarkers
                 }
                 .frame(height: 160)
+                .padding(.top, 14)
 
                 let rates = breathingWindows.compactMap(\.breathingRate)
                 let avg = rates.reduce(0, +) / Double(rates.count)
@@ -248,8 +343,9 @@ struct SessionDetailView: View {
                     onsetMarkers
                 }
                 .chartForegroundStyleScale(range: Gradient(colors: [.orange, .yellow, .green]))
-                .chartYScale(domain: Heartbeat.minBPM...Heartbeat.maxBPM)
+                .chartYScale(domain: heartbeatYDomain)
                 .frame(height: 160)
+                .padding(.top, 14)
 
                 if let med = heartbeat.medianBPM {
                     stat("Resting heart rate", String(format: "≈ %.0f bpm", med))
