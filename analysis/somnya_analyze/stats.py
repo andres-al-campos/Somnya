@@ -264,6 +264,9 @@ def compute_sleep_stats(df: pd.DataFrame) -> list[Stat]:
     # ---- ESTIMATED: time to fall asleep (body settling into sustained quiet) -----------------
     stats.append(_sleep_onset_stat(df, surf, wmin))
 
+    # ---- ESTIMATED: when you woke for good (bookends the sleep window) ------------------------
+    stats.append(_wake_time_stat(df, surf))
+
     # ---- ESTIMATED: breathing ----------------------------------------------------------------
     stats.extend(_breathing_stats(surf))
 
@@ -552,6 +555,15 @@ ONSET_PERSIST_MOVED_FRAC = 0.05 # ...with movement in < this fraction of post-on
                                 # not the clinical first-persistent-epoch (which tolerates arousals and
                                 # fires earlier than people feel). Near-zero stirring = actually down.
 
+# WAKE is the mirror of onset, and EASIER: waking is a loud signal (the alarm/get-up spike dwarfs a
+# stir) where onset is a subtle settling. We define wake = the end of the LAST sustained-sleep block —
+# i.e. the moment after which movement breaks for good and does NOT return to sustained quiet. Same
+# persistence idea, run from the end: the post-wake tail must STAY active (you got up), not just twitch.
+WAKE_ACTIVE_MIN = 8.0           # the awake tail must stay active at least this long to count as "up"
+WAKE_ACTIVE_MOVED_FRAC = 0.30   # ...with movement in >= this fraction of the tail (looser than onset's
+                                # 0.05: awake-in-bed is restless but not constantly moving, so a moderate
+                                # bar catches "up and about" without needing nonstop motion).
+
 
 def sleep_onset(surf: pd.DataFrame):
     """Detect when you fell asleep, validated by a clinical persistence criterion. Returns a dict
@@ -632,6 +644,98 @@ def sleep_onset(surf: pd.DataFrame):
     }
 
 
+def wake_time(surf: pd.DataFrame):
+    """Detect when you woke for good — the END of the last sustained-sleep block. Mirror of sleep_onset,
+    but easier: waking is a loud signal (alarm/get-up spike) where onset is subtle. Returns a dict
+    {wake_min, confidence} or None (no clear wake — e.g. still asleep when recording stopped, or it
+    never settled). Shared by the stat and the plot so they agree.
+
+      • wake_min — the moment after which movement breaks for good: the last window that was part of
+        sustained sleep, i.e. the start of the final stretch that STAYS active (you got up). Anything
+        after wake_min is the awake tail and should be excluded from sleep averages.
+      • confidence — high when wake is a clean break (a big spike into a clearly active tail); lower
+        when the tail is brief or the recording likely stopped before a real wake.
+
+    Returns None when there's no onset (you must sleep to wake) or no sustained-active tail (you may
+    have stopped the recording while still in bed/asleep). ESTIMATED — body activity, not EEG."""
+    onset = sleep_onset(surf)
+    if not isinstance(onset, dict):
+        return None  # no validated sleep → "wake" is meaningless
+    s = surf.reset_index(drop=True)
+    mins = s["minutes"].to_numpy(dtype=float)
+    moved = ((s["accel_activity_count"].to_numpy(dtype=float) >= MOVEMENT_THRESHOLD)
+             if "accel_activity_count" in s.columns else np.zeros(len(s), dtype=bool))
+    n = len(s)
+    if n < 2:
+        return None
+
+    settle = onset["settle_min"]
+    total_min = float(mins[-1])
+    act = (s["accel_activity_count"].to_numpy(dtype=float) if "accel_activity_count" in s.columns
+           else np.zeros(n))
+
+    # Wake = the END of the last SUSTAINED-SLEEP block. Find it by locating the longest quiet run after
+    # onset (that's the core of the night's sleep), then walking forward to where quiet first breaks for
+    # good. "For good" = quiet does not resume for a sustained stretch afterward (so a single end-of-
+    # sleep arousal that you slept off doesn't count; the real morning break does).
+    quiet = ~moved
+    # Longest contiguous quiet run that starts at/after onset — the main sleep block.
+    best_len, best_start, best_end = 0.0, None, None
+    i = 0
+    while i < n:
+        if quiet[i] and mins[i] >= settle:
+            j = i
+            while j + 1 < n and quiet[j + 1]:
+                j += 1
+            run = mins[j] - mins[i]
+            if run > best_len:
+                best_len, best_start, best_end = run, i, j
+            i = j + 1
+        else:
+            i += 1
+    if best_end is None:
+        return None  # no quiet sleep block after onset — can't place a wake
+
+    # From the end of that main quiet block, the next moved window is where sleep broke. But require that
+    # quiet does NOT return for a long stretch after it — otherwise it was a brief arousal mid-sleep, and
+    # the real wake is later. Walk forward, accepting the first break whose following span stays broken
+    # of any LONG quiet (>= a nap-scaled threshold), else keep looking.
+    resume_min = min(20.0, max(5.0, total_min / 6))  # a quiet run this long after a break = back asleep
+    k = best_end + 1
+    wake_idx = None
+    while k < n:
+        if moved[k]:
+            # does a long quiet run resume after k? if so this was an arousal, not the final wake
+            m = k
+            longest_after = 0.0
+            while m < n:
+                if quiet[m]:
+                    p = m
+                    while p + 1 < n and quiet[p + 1]:
+                        p += 1
+                    longest_after = max(longest_after, mins[p] - mins[m])
+                    m = p + 1
+                else:
+                    m += 1
+            wake_idx = k
+            if longest_after < resume_min:
+                break  # quiet never durably resumes → this is the real wake
+        k += 1
+    if wake_idx is None:
+        # Quiet block runs to the end with no break after it → still asleep when recording stopped.
+        return None
+
+    # Confidence: a clean wake is a strong break (big spike) with no long quiet afterward. Reward the
+    # peak activity at the break and how decisively sleep ended.
+    look_end = int(np.searchsorted(mins, mins[wake_idx] + WAKE_ACTIVE_MIN))
+    peak = float(np.nanmax(act[wake_idx:max(wake_idx + 1, look_end)])) if look_end > wake_idx else 0.0
+    conf = 0.55 + min(0.25, 0.1 * peak)          # alarm/sit-up spike → confident
+    conf += min(0.10, 0.05 * (total_min - mins[wake_idx]) / 10)  # a real awake tail adds certainty
+    conf = float(max(0.3, min(0.9, conf)))
+
+    return {"wake_min": float(mins[wake_idx]), "confidence": conf}
+
+
 def mark_sleep_onset(ax, surf: pd.DataFrame, *, label=True, shade=False):
     """Draw the "fell asleep" reference markers on ANY chart's axis, so the onset story threads through
     the movement / HR / breathing views — you can see e.g. that HR settled right at the green line.
@@ -643,13 +747,19 @@ def mark_sleep_onset(ax, surf: pd.DataFrame, *, label=True, shade=False):
     if not isinstance(res, dict):  # None (never settled) or "no_signal" (no stillness data) → nothing to draw
         return None
     settle, drift = res["settle_min"], res["drift_min"]
+    wake = wake_time(surf)  # the bookend: when sleep broke for good (None if still asleep at stop)
     if shade:
         ax.axvspan(0, settle, color="#f1c40f", alpha=0.06, zorder=0)
+        if wake is not None:  # dim the awake tail too, so the sleep window reads as the un-shaded middle
+            ax.axvspan(wake["wake_min"], ax.get_xlim()[1], color="#f1c40f", alpha=0.06, zorder=0)
     if drift is not None:
         ax.axvline(drift, color="#e67e22", lw=1.1, ls="--", alpha=0.8, zorder=2,
                    label=(f"almost asleep ~{drift:.0f}m" if label else None))
     ax.axvline(settle, color="#1e8449", lw=1.8, alpha=0.9, zorder=2,
                label=(f"fell asleep ~{settle:.0f}m" if label else None))
+    if wake is not None:
+        ax.axvline(wake["wake_min"], color="#c0392b", lw=1.8, alpha=0.9, zorder=2,
+                   label=(f"woke up ~{wake['wake_min']:.0f}m" if label else None))
     return res
 
 
@@ -678,6 +788,27 @@ def _sleep_onset_stat(df: pd.DataFrame, surf: pd.DataFrame, wmin: float) -> Stat
                   f"({stirs} stir(s) before. body-settling, not brain onset — ± a few min)")
     return Stat("sleep_onset_min", "Time to fall asleep", Tier.ESTIMATED,
                 settle_min, "min", confidence=conf, detail=detail)
+
+
+def _wake_time_stat(df: pd.DataFrame, surf: pd.DataFrame) -> Stat:
+    """When you woke for good (end of the last sustained-sleep block) and the resulting sleep WINDOW
+    (onset→wake). Crucial because everything after wake — alarm spike, lying in bed, on your phone — is
+    NOT sleep; without this the night's duration/stillness stats count that awake tail. ESTIMATED."""
+    onset = sleep_onset(surf)
+    res = wake_time(surf)
+    if res is None:
+        return Stat("wake_min", "Woke up at", Tier.GUESSED, None,
+                    detail="no clear wake — you may still have been asleep/in bed when recording "
+                           "stopped, or the night never settled")
+    wake_min, conf = res["wake_min"], res["confidence"]
+    settle_min = onset["settle_min"] if isinstance(onset, dict) else 0.0
+    sleep_window = wake_min - settle_min
+    total = float(surf["minutes"].iloc[-1]) if len(surf) else wake_min
+    tail = total - wake_min
+    detail = (f"sleep window ≈ {sleep_window:.0f} min (onset→wake); "
+              f"{tail:.0f} min after this was awake/in-bed, excluded from sleep — body activity, ± a few min")
+    return Stat("wake_min", "Woke up at", Tier.ESTIMATED, wake_min, "min",
+                confidence=conf, detail=detail)
 
 
 def _heartbeat_stat(df: pd.DataFrame, surf: pd.DataFrame) -> Stat:
