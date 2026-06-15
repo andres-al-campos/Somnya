@@ -145,17 +145,46 @@ def _local_start(df: pd.DataFrame):
 def _label_time_axis(ax, df: pd.DataFrame):
     """Relabel an elapsed-minutes x-axis with LOCAL clock times (HH:MM) when the capture offset is
     known, so charts read in the wall clock the night was recorded in (e.g. an 8:30 alarm shows at
-    08:30). Falls back to the elapsed-hours labels when there's no offset (older files)."""
+    08:30). Ticks land on ROUND clock times (…, 03:30, 04:00, 04:30, …), not offset from the start
+    minute — so the labels are even hours/half-hours, far easier to read. Falls back to elapsed-hours
+    labels when there's no offset (older files)."""
     import matplotlib.ticker as mticker
     local0 = _local_start(df)
     if local0 is None:
         ax.set_xlabel("time (hours)")
         return
-    def fmt(x, _pos):
-        return (local0 + pd.Timedelta(minutes=float(x))).strftime("%H:%M")
-    ax.xaxis.set_major_formatter(mticker.FuncFormatter(fmt))
-    ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
+    x_lo, x_hi = ax.get_xlim()                      # current span, in elapsed minutes
+    span_min = max(1.0, x_hi - x_lo)
+    step_min = 30.0 if span_min <= 240 else 60.0    # half-hour ticks for short spans, hourly for long
+    # First round clock time (multiple of step) at/after the start, then march forward by step. Convert
+    # each clock instant back to its elapsed-minute x-position so ticks sit on round times.
+    start_floor = local0.floor(f"{int(step_min)}min")
+    first = start_floor if start_floor >= local0 else start_floor + pd.Timedelta(minutes=step_min)
+    ticks, labels = [], []
+    t = first
+    end = local0 + pd.Timedelta(minutes=x_hi)
+    while t <= end:
+        ticks.append((t - local0).total_seconds() / 60.0)   # elapsed-minute position of this clock time
+        labels.append(t.strftime("%H:%M"))
+        t += pd.Timedelta(minutes=step_min)
+    ax.xaxis.set_major_locator(mticker.FixedLocator(ticks))
+    ax.set_xticklabels(labels)
     ax.set_xlabel(f"clock time (local, {local0.strftime('%a %b %-d')})")
+
+
+def _local_minor_minutes(df: pd.DataFrame, x_lo: float, x_hi: float) -> list:
+    """Elapsed-minute positions for minor ticks on ROUND quarter-hour clock times (…:00, :15, :30, :45)
+    within [x_lo, x_hi]. Mirrors _label_time_axis's major ticks so the gradations also sit on the clock,
+    not offset from the start minute. Empty when the capture offset is unknown."""
+    local0 = _local_start(df)
+    if local0 is None:
+        return []
+    first = local0.ceil("15min")
+    out, t, end = [], first, local0 + pd.Timedelta(minutes=x_hi)
+    while t <= end:
+        out.append((t - local0).total_seconds() / 60.0)
+        t += pd.Timedelta(minutes=15)
+    return out
 
 
 def _classify_posture(gx, gy, gz) -> str:
@@ -955,7 +984,7 @@ def plot_heartbeat(df: pd.DataFrame, out_path):
            ylabel="bpm")
     if mark_sleep_onset(ax, surf):  # show when sleep began — HR often settles right at this line
         ax.legend(loc="upper right", fontsize=8)
-    set_hours_axis(ax, xmax)
+    set_hours_axis(ax, xmax, df)
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
     plt.close(fig)
@@ -1011,7 +1040,7 @@ def plot_sleep_onset(df: pd.DataFrame, out_path):
 
     ax.set(ylabel="activity")
     ax.set_ylim(bottom=0)
-    set_hours_axis(ax, xmax)
+    set_hours_axis(ax, xmax, df)
     ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(out_path, dpi=110)
@@ -1084,7 +1113,7 @@ def plot_movement_timeline(df: pd.DataFrame, out_path):
            # good for ORDERING movements, not a physical absolute.
            ylabel="movement intensity\n(activity index)")
     from . import set_hours_axis  # shared hours x-axis (lazy import avoids circular import)
-    set_hours_axis(ax, xmax)
+    set_hours_axis(ax, xmax, df)
     # The "fell asleep" line: movement visibly calms right at it — the clearest place to show the marker.
     onset = mark_sleep_onset(ax, _surface_only(df))
     if ("on_surface" in df.columns and not df["on_surface"].all()) or onset:

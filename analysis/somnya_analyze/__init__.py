@@ -560,16 +560,20 @@ def set_hours_axis(ax, total_minutes: float, df: pd.DataFrame | None = None) -> 
     time (HH:MM) so charts read in the real wall clock — an 8:30 alarm shows at 08:30, far clearer than
     "hour 5.5". Otherwise fall back to elapsed HOURS (0h,1h,…). Data stays plotted in minutes either
     way; this only relabels."""
-    from matplotlib.ticker import MultipleLocator, FuncFormatter
-    ax.xaxis.set_minor_locator(MultipleLocator(15))      # quarter-hour gradations
+    from matplotlib.ticker import MultipleLocator, FuncFormatter, FixedLocator
     ax.tick_params(axis="x", which="minor", length=3)
     ax.set_xlim(0, max(total_minutes, 1))
     if df is not None:
-        from .stats import _label_time_axis, _local_start
+        from .stats import _label_time_axis, _local_start, _local_minor_minutes
         if _local_start(df) is not None:
-            ax.xaxis.set_major_locator(MultipleLocator(60))  # hourly ticks, labeled as clock time
+            # Major + minor ticks both on round clock times, so labels read 03:30, 04:00, …
+            # rather than offset from the start minute.
             _label_time_axis(ax, df)
+            minor = _local_minor_minutes(df, *ax.get_xlim())
+            if minor:
+                ax.xaxis.set_minor_locator(FixedLocator(minor))
             return
+    ax.xaxis.set_minor_locator(MultipleLocator(15))      # quarter-hour gradations (elapsed)
     ax.xaxis.set_major_locator(MultipleLocator(60))      # one tick per hour
     ax.xaxis.set_major_formatter(FuncFormatter(lambda m, _: f"{m/60:g}h"))
     ax.set_xlabel("time (hours)")
