@@ -9,6 +9,7 @@ struct SessionHistoryView: View {
 
     @State private var exportItem: ExportFile?
     @State private var exportError: String?
+    @State private var isExporting = false
 
     /// `sheet(item:)` wrapper — driving presentation off the payload avoids the empty-panel race where
     /// the sheet opens before the file URL is committed. Same pattern as RawDataView.
@@ -64,9 +65,26 @@ struct SessionHistoryView: View {
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
-                .disabled(exportable.isEmpty)
+                .disabled(exportable.isEmpty || isExporting)
             }
         }
+        .overlay {
+            if isExporting {
+                // A blocking, labelled spinner: zipping a few big nights takes a moment, and without
+                // this the app looked frozen and the export looked broken.
+                ZStack {
+                    Color.black.opacity(0.45).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Preparing export…").font(.callout)
+                    }
+                    .padding(24)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isExporting)
         .sheet(item: $exportItem) { item in
             ShareSheet(items: [item.url])
         }
@@ -80,19 +98,35 @@ struct SessionHistoryView: View {
     /// Zip the given sessions into one archive, present the share sheet, and stamp `exportedAt` so a
     /// later "export new" skips them. Stamping happens once the zip is built (we can't see the Mac);
     /// "export all" re-exports regardless, which is the recovery path if the Mac copies are ever lost.
+    ///
+    /// Serializing reads managed objects (main actor); the heavy write+zip runs off-main so the UI keeps
+    /// painting the spinner instead of freezing.
     private func export(_ toExport: [SleepSession]) {
-        guard !toExport.isEmpty else { return }
-        do {
-            let result = try SessionJSON.writeZip(for: toExport)
-            let now = Date()
-            for s in result.included { s.exportedAt = now }
-            try? context.save()
-            if !result.failed.isEmpty {
-                SomnyaLog.lifecycle("Export: \(result.failed.count) session(s) skipped (serialize failed)")
+        guard !toExport.isEmpty, !isExporting else { return }
+        isExporting = true
+        Task {
+            // Phase 1 (main actor): managed objects → Sendable JSON blobs.
+            let serialized = SessionJSON.serialize(toExport)
+            let payload = serialized.blobs.map { (name: $0.name, data: $0.data) }
+
+            // Phase 2 (background): write + compress the Sendable blobs into one zip.
+            let zipResult = await Task.detached(priority: .userInitiated) {
+                Result { try SessionJSON.zip(blobs: payload) }
+            }.value
+
+            isExporting = false
+            switch zipResult {
+            case .success(let url):
+                let now = Date()
+                for b in serialized.blobs { b.session.exportedAt = now }
+                try? context.save()
+                if !serialized.failed.isEmpty {
+                    SomnyaLog.lifecycle("Export: \(serialized.failed.count) session(s) skipped (serialize failed)")
+                }
+                exportItem = ExportFile(url: url)
+            case .failure(let error):
+                exportError = "Couldn't build the export: \(error.localizedDescription) Free up storage and try again."
             }
-            exportItem = ExportFile(url: result.url)
-        } catch {
-            exportError = "Couldn't build the export: \(error.localizedDescription) Free up storage and try again."
         }
     }
 

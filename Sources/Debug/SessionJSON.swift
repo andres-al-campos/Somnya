@@ -91,46 +91,56 @@ enum SessionJSON {
             .replacingOccurrences(of: ":", with: "-")
     }
 
-    /// Bundle many sessions into ONE zip for export. Loose multi-file AirDrop dumps every file into
-    /// Downloads to be hunted down; a single `somnya-export.zip` is one accept and one tidy file to
-    /// unzip wherever you like. Each night becomes `somnya-session-<stamp>.json` inside the archive.
-    /// Returns the zip plus the sessions that made it in (so the caller can stamp `exportedAt`) and any
-    /// that failed to serialize (surfaced, not fatal — one bad night doesn't sink the batch).
-    struct ZipResult {
-        let url: URL
-        let included: [SleepSession]
+    // MARK: - Batch zip export
+    //
+    // Bundle many sessions into ONE zip. Loose multi-file AirDrop dumps every file into Downloads to be
+    // hunted down; a single dated zip is one accept and one tidy folder to unzip. Each night becomes
+    // `somnya-session-<stamp>.json` inside the archive.
+    //
+    // Split into two phases so the slow part can run off the main thread WITHOUT a data race:
+    //   • `serialize(_:)` reads the SwiftData managed objects (must be on the main actor) into plain
+    //     Sendable Data blobs, collecting per-night failures rather than sinking the batch.
+    //   • `zip(blobs:)` takes only Sendable values, so it's safe to run on a background task — this is
+    //     the heavy file-write + compress that was freezing the UI.
+
+    /// One night flattened to a Sendable blob: its session, its in-archive filename, and the JSON bytes.
+    struct Blob { let session: SleepSession; let name: String; let data: Data }
+
+    struct SerializeResult {
+        let blobs: [Blob]
         let failed: [(session: SleepSession, error: Error)]
     }
 
-    static func writeZip(for sessions: [SleepSession]) throws -> ZipResult {
+    /// Main-actor: turn sessions into JSON blobs. Reads managed objects, so keep it on the main actor.
+    @MainActor
+    static func serialize(_ sessions: [SleepSession]) -> SerializeResult {
+        var blobs: [Blob] = []
+        var failed: [(SleepSession, Error)] = []
+        for s in sessions {
+            do { blobs.append(Blob(session: s, name: "somnya-session-\(stamp(for: s)).json", data: try make(from: s))) }
+            catch { failed.append((s, error)) }
+        }
+        return SerializeResult(blobs: blobs, failed: failed)
+    }
+
+    /// Background-safe: write the blobs into a dated folder and zip it. Inputs are all Sendable (name +
+    /// Data), so no managed objects cross the thread boundary. Returns the finished zip's URL.
+    static func zip(blobs: [(name: String, data: Data)]) throws -> URL {
+        guard !blobs.isEmpty else { throw ExportError.nothingToExport }
         let fm = FileManager.default
-        // Stage the JSONs in a folder; zipping the folder yields one archive that unzips to that folder.
-        // Name it by date so it lands as a clean `somnya-export-2026-06-14/` on the Mac (not a raw
-        // epoch). Remove any stale same-day staging/zip first so a re-export doesn't append/clobber.
+        // Name the folder by date so it lands as a clean `somnya-export-2026-06-14/` on the Mac (not a
+        // raw epoch). Remove any stale same-day staging/zip first so a re-export doesn't clobber.
         let dateStamp = Date().formatted(.iso8601.year().month().day().dateSeparator(.dash))
         let folderName = "somnya-export-\(dateStamp)"
         let stageDir = fm.temporaryDirectory.appendingPathComponent(folderName, isDirectory: true)
         try? fm.removeItem(at: stageDir)
         try fm.createDirectory(at: stageDir, withIntermediateDirectories: true)
-
-        var included: [SleepSession] = []
-        var failed: [(SleepSession, Error)] = []
-        for s in sessions {
-            do {
-                let data = try make(from: s)
-                try data.write(to: stageDir.appendingPathComponent("somnya-session-\(stamp(for: s)).json"),
-                               options: .atomic)
-                included.append(s)
-            } catch {
-                failed.append((s, error))
-            }
-        }
-        guard !included.isEmpty else {
-            throw ExportError.nothingToExport
+        for b in blobs {
+            try b.data.write(to: stageDir.appendingPathComponent(b.name), options: .atomic)
         }
 
         // Zip via NSFileCoordinator(.forUploading): reads a folder and hands back a temp zip of it.
-        // We copy that out to a stable URL (the coordinator's temp is reclaimed when the block exits).
+        // Copy that out to a stable URL (the coordinator's temp is reclaimed when the block exits).
         let zipURL = fm.temporaryDirectory.appendingPathComponent("\(folderName).zip")
         try? fm.removeItem(at: zipURL)
         var coordError: NSError?
@@ -143,8 +153,7 @@ enum SessionJSON {
         if let coordError { throw coordError }
         if let copyError { throw copyError }
         try? fm.removeItem(at: stageDir)  // staging no longer needed once zipped
-
-        return ZipResult(url: zipURL, included: included, failed: failed)
+        return zipURL
     }
 
     enum ExportError: LocalizedError {
