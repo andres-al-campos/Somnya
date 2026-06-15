@@ -123,8 +123,9 @@ def _load_json(path: Path) -> pd.DataFrame:
     with open(path) as f:
         doc = json.load(f)
     df = pd.json_normalize(doc["windows"])
-    # Stash config + envelopes on the frame for the sweeps (as attrs so they survive).
+    # Stash config + session meta on the frame for the sweeps (as attrs so they survive).
     df.attrs["config"] = doc.get("config", {})
+    df.attrs["session"] = doc.get("session", {})
     return df
 
 
@@ -554,17 +555,24 @@ def plot_value_with_confidence(ax, minutes, values, conf, *, conf_lo=0.15, conf_
     return sm
 
 
-def set_hours_axis(ax, total_minutes: float) -> None:
-    """X-axis in HOURS with sub-hour gradations. Easier to read than raw minutes for a night-long
-    span: major ticks every hour (labeled 0h,1h,…), minor ticks every 15 min (unlabeled). Data
-    stays plotted in minutes; we just relabel — minutes/60 = hours."""
+def set_hours_axis(ax, total_minutes: float, df: pd.DataFrame | None = None) -> None:
+    """X-axis for a night-long span. When `df` carries the capture UTC offset, label in LOCAL CLOCK
+    time (HH:MM) so charts read in the real wall clock — an 8:30 alarm shows at 08:30, far clearer than
+    "hour 5.5". Otherwise fall back to elapsed HOURS (0h,1h,…). Data stays plotted in minutes either
+    way; this only relabels."""
     from matplotlib.ticker import MultipleLocator, FuncFormatter
-    ax.xaxis.set_major_locator(MultipleLocator(60))      # one tick per hour
     ax.xaxis.set_minor_locator(MultipleLocator(15))      # quarter-hour gradations
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda m, _: f"{m/60:g}h"))
     ax.tick_params(axis="x", which="minor", length=3)
-    ax.set_xlabel("time (hours)")
     ax.set_xlim(0, max(total_minutes, 1))
+    if df is not None:
+        from .stats import _label_time_axis, _local_start
+        if _local_start(df) is not None:
+            ax.xaxis.set_major_locator(MultipleLocator(60))  # hourly ticks, labeled as clock time
+            _label_time_axis(ax, df)
+            return
+    ax.xaxis.set_major_locator(MultipleLocator(60))      # one tick per hour
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda m, _: f"{m/60:g}h"))
+    ax.set_xlabel("time (hours)")
 
 
 def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
@@ -579,7 +587,7 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
     ax.set(title="Movement (accel activity count) per 30s window", ylabel="activity")
     if mark_sleep_onset(ax, _surface_only(df)):  # movement visibly drops at the fell-asleep line
         ax.legend(loc="upper right", fontsize=8)
-    set_hours_axis(ax, total_min)
+    set_hours_axis(ax, total_min, df)
     p = out_dir / "movement.png"
     fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
@@ -602,7 +610,7 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
             ax.text(0.0, lvl, f" {name}", color="#999", fontsize=7, va="bottom", ha="left")
         ax.set(title="Sound level vs noise floor (≈ dB-SPL, approximate; overlap = breathing buried)",
                ylabel="level (≈ dB-SPL)")
-        set_hours_axis(ax, total_min)
+        set_hours_axis(ax, total_min, df)
         ax.legend(loc="upper right")
         p = out_dir / "audio_rms_vs_floor.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
@@ -625,7 +633,7 @@ def make_plots(df: pd.DataFrame, out_dir: Path) -> list[Path]:
         from .stats import mark_sleep_onset  # the "fell asleep" line — breathing steadies right at it
         if mark_sleep_onset(ax, _surface_only(df)):
             ax.legend(loc="upper right", fontsize=8)
-        set_hours_axis(ax, total_min)
+        set_hours_axis(ax, total_min, df)
         p = out_dir / "breathing.png"
         fig.tight_layout(); fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 

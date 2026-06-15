@@ -124,6 +124,40 @@ def _window_minutes(df: pd.DataFrame) -> float:
     return float(df.attrs.get("config", {}).get("window_seconds", 30)) / 60.0
 
 
+def _local_start(df: pd.DataFrame):
+    """The recording's start as a LOCAL-clock datetime, using the captured UTC offset. Returns None if
+    the session metadata or offset isn't present (pre-feature exports) — callers fall back to elapsed."""
+    sess = df.attrs.get("session", {})
+    off = sess.get("utc_offset_seconds")
+    start = sess.get("start")
+    if off is None or start is None:
+        return None
+    try:
+        t = pd.to_datetime(start)
+        # Drop tz so we can add the offset and read it as a naive wall-clock time.
+        if t.tzinfo is not None:
+            t = t.tz_convert("UTC").tz_localize(None)
+        return t + pd.Timedelta(seconds=int(off))
+    except Exception:
+        return None
+
+
+def _label_time_axis(ax, df: pd.DataFrame):
+    """Relabel an elapsed-minutes x-axis with LOCAL clock times (HH:MM) when the capture offset is
+    known, so charts read in the wall clock the night was recorded in (e.g. an 8:30 alarm shows at
+    08:30). Falls back to the elapsed-hours labels when there's no offset (older files)."""
+    import matplotlib.ticker as mticker
+    local0 = _local_start(df)
+    if local0 is None:
+        ax.set_xlabel("time (hours)")
+        return
+    def fmt(x, _pos):
+        return (local0 + pd.Timedelta(minutes=float(x))).strftime("%H:%M")
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(fmt))
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
+    ax.set_xlabel(f"clock time (local, {local0.strftime('%a %b %-d')})")
+
+
 def _classify_posture(gx, gy, gz) -> str:
     ax, ay, az = abs(gx), abs(gy), abs(gz)
     if az >= ax and az >= ay:
