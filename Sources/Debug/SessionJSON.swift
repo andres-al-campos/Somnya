@@ -19,6 +19,9 @@ enum SessionJSON {
                 "duration_s": session.duration,
                 "detection": session.detectionMethodRaw,
                 "window_count": windows.count,
+                // UTC offset (seconds) at capture, so timestamps can render in the local clock the
+                // night was recorded in. nil on pre-feature sessions.
+                "utc_offset_seconds": session.utcOffsetSeconds as Any,
             ],
             // Embed the capture config so the file is self-interpreting later.
             "config": [

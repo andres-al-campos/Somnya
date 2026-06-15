@@ -9,6 +9,10 @@ enum SomnyaConfig {
     /// Window length for sensor aggregation.
     static let windowSeconds: Double = 30
 
+    /// A recording at/under this many seconds is "too short to be useful" — on stop, the app offers to
+    /// discard it rather than silently keeping a 5-minute scrap that pollutes history and averages.
+    static let shortSessionSeconds: Double = 30 * 60  // 30 min
+
     /// Motion capture / analysis rates.
     static let captureHz: Double = 50
     static let analysisHz: Double = 10

@@ -57,6 +57,10 @@ final class SleepSession {
     /// batch export skips nights already pulled to the Mac. It's the app's belief, not a Mac receipt —
     /// if the files are lost on the Mac, "export all" re-exports regardless of this stamp.
     var exportedAt: Date?
+    /// The device's UTC offset (seconds) at capture, e.g. -18000 for UTC-5. Stored so timestamps —
+    /// which are written as UTC — can be shown in the LOCAL clock the night was actually recorded in.
+    /// Captured automatically from TimeZone.current; nil on sessions recorded before this was added.
+    var utcOffsetSeconds: Int?
 
     @Relationship var day: SleepDay?
     @Relationship(deleteRule: .cascade, inverse: \SensorWindow.session)
@@ -88,6 +92,7 @@ final class SleepSession {
         self.notes = nil
         self.restednessRating = nil
         self.exportedAt = nil
+        self.utcOffsetSeconds = TimeZone.current.secondsFromGMT(for: startTime)
         self.windows = []
         self.phases = []
         self.analysisCache = nil

@@ -10,8 +10,15 @@ struct RootView: View {
     @StateObject private var mic = MicPermission()
     @Query(sort: \SleepSession.startTime, order: .reverse) private var sessions: [SleepSession]
 
+    /// Bound navigation path so we can pop back to the tracking screen automatically when a session
+    /// starts (e.g. begun via gesture/Shortcut while the user was reading History — landing on a random
+    /// pushed view while tracking is confusing). Routes are typed below.
+    @State private var path: [Route] = []
+
+    private enum Route: Hashable { case history, debug }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             VStack(spacing: 20) {
                 Text("Somnya")
                     .font(.largeTitle.bold())
@@ -42,17 +49,13 @@ struct RootView: View {
                 Spacer()
 
                 HStack {
-                    NavigationLink {
-                        SessionHistoryView()
-                    } label: {
+                    NavigationLink(value: Route.history) {
                         Label("History (\(sessions.count))", systemImage: "list.bullet.rectangle")
                     }
                     .buttonStyle(.bordered)
                     .tint(.white)
 
-                    NavigationLink {
-                        DebugLogView()
-                    } label: {
+                    NavigationLink(value: Route.debug) {
                         Label("Debug", systemImage: "ladybug")
                     }
                     .buttonStyle(.bordered)
@@ -63,12 +66,60 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.94))
             .foregroundStyle(.white)
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .history: SessionHistoryView()
+                case .debug: DebugLogView()
+                }
+            }
         }
         .onAppear { consumePendingStartIfNeeded() }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didBecomeActiveNotification)) { _ in
             consumePendingStartIfNeeded()
         }
+        // When tracking begins while a sub-view is pushed, pop back to the tracking screen — otherwise
+        // you're staring at History/Debug with no obvious sign the session started.
+        .onChange(of: session.isTracking) { wasTracking, nowTracking in
+            if nowTracking && !wasTracking && !path.isEmpty { path.removeAll() }
+        }
+        // A finished session of normal length needs no prompt — clear it so it doesn't linger as a
+        // pending decision. Short ones stay until the user picks Save/Discard via the alert.
+        .onChange(of: session.lastFinishedSession) { _, finished in
+            if let s = finished, s.duration > SomnyaConfig.shortSessionSeconds {
+                session.keepFinishedSession()
+            }
+        }
+        // Offer to discard a too-short recording rather than silently keeping a useless scrap.
+        .alert("Short recording", isPresented: shortSessionAlertBinding) {
+            Button("Discard", role: .destructive) {
+                if let s = session.lastFinishedSession { session.discardSession(s) }
+            }
+            Button("Save", role: .cancel) { session.keepFinishedSession() }
+        } message: {
+            if let s = session.lastFinishedSession {
+                Text("This recording is only \(Self.minutesString(s.duration)) long — that might not be enough data for a useful analysis. Keep it anyway, or discard it?")
+            }
+        }
+    }
+
+    /// True only while a just-finished session is short enough to warrant the save/discard prompt.
+    private var shortSessionAlertBinding: Binding<Bool> {
+        Binding(
+            get: {
+                guard let s = session.lastFinishedSession else { return false }
+                return s.duration <= SomnyaConfig.shortSessionSeconds
+            },
+            set: { showing in
+                // Dismissing without a button (shouldn't happen for an alert) keeps the session.
+                if !showing { session.keepFinishedSession() }
+            }
+        )
+    }
+
+    private static func minutesString(_ seconds: TimeInterval) -> String {
+        let m = Int(seconds) / 60, s = Int(seconds) % 60
+        return m > 0 ? "\(m) min \(s) sec" : "\(s) sec"
     }
 
     /// If an App Intent (gesture/Shortcut) requested a start, honor it now that the app is live.

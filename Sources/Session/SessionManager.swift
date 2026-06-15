@@ -12,6 +12,9 @@ final class SessionManager: ObservableObject {
     @Published private(set) var currentSession: SleepSession?
     @Published private(set) var lastGuardrailResults: [GuardrailResult] = []
     @Published private(set) var windowCount = 0
+    /// The session just finished by stopSession(), held briefly so the UI can offer save/discard on a
+    /// too-short recording. Cleared once the user decides (keep) or it's deleted (discard).
+    @Published var lastFinishedSession: SleepSession?
 
     private let context: ModelContext
     private let motion = MotionCapture()
@@ -160,6 +163,23 @@ final class SessionManager: ObservableObject {
 
         UIApplication.shared.isIdleTimerDisabled = false
         SomnyaLog.lifecycle("Session STOPPED reason=\(reason) duration=\(Int(session.duration))s")
+        lastFinishedSession = session  // surfaced so the UI can offer discard if it's too short
         currentSession = nil
     }
+
+    /// Discard a just-finished session the user chose not to keep (e.g. a too-short recording).
+    /// Cascade-deletes its windows/cache. No-op if it's not the held finished session.
+    func discardSession(_ session: SleepSession) {
+        context.delete(session)
+        do {
+            try context.save()
+            SomnyaLog.lifecycle("Session DISCARDED (too short / user choice) start=\(session.startTime)")
+        } catch {
+            SomnyaLog.persist("FAILED to discard session: \(error)")
+        }
+        if lastFinishedSession === session { lastFinishedSession = nil }
+    }
+
+    /// Keep a just-finished session (clear the pending save/discard prompt).
+    func keepFinishedSession() { lastFinishedSession = nil }
 }
