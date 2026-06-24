@@ -5,9 +5,14 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+# DEVELOPMENT_TEAM comes from Config.xcconfig (gitignored, per-machine). Copy
+# Config.xcconfig.example → Config.xcconfig and set your own Team ID.
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+
 settings:
   base:
-    DEVELOPMENT_TEAM: 35DGVFM7WB
     MARKETING_VERSION: "0.4"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"

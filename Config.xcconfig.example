@@ -1,0 +1,11 @@
+// Template for local signing config.
+//
+//   cp Config.xcconfig.example Config.xcconfig
+//
+// then set DEVELOPMENT_TEAM to your own Apple Development Team ID.
+// Find it in Xcode → Settings → Accounts → (your team), or as the
+// 10-character Team ID in your Apple Developer account. A free Apple ID
+// works for installing to your own device.
+//
+// Config.xcconfig is gitignored so your team ID never gets committed.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
