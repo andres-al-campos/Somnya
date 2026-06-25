@@ -55,6 +55,9 @@ Xcode GUI, Sideloadly, or re-signing tools required.
 `Config.xcconfig` holds your personal Team ID and is gitignored, so it never gets
 committed.
 
+A free-account signature expires after about 7 days. Re-run `./build.sh` to renew it,
+or use [ReSign](https://github.com/Id3arium/ReSign) to renew automatically.
+
 ## Offline analysis
 
 `analysis/` is a Python package ([uv](https://github.com/astral-sh/uv)) for tuning
