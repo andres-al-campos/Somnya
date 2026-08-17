@@ -1,6 +1,12 @@
 #!/bin/bash
 # Build Somnya.app, sign it with your Apple ID, and install to your iPhone.
 #
+# GENERATED from walled_garden/_template/ios-build.sh — edit that and re-run
+# walled_garden/sync-build-scripts.sh, or the next sync overwrites this file.
+# It is committed here anyway so the project stays standalone: each of these is
+# its own repo, and a script sourced from a shared parent would be missing from
+# every clone.
+#
 # Standalone: needs only Xcode's command-line tools and an Apple ID signed in
 # to Xcode (Settings → Accounts). No Sideloadly, no ReSign, no Xcode GUI build.
 # ReSign can also build this project on its own for auto-renewal, but it is not
@@ -29,7 +35,20 @@ while [ $# -gt 0 ]; do
         -v|--verbose)    VERBOSE=1 ;;
         --device)        shift; DEVICE_ID="${1:-}" ;;
         -h|--help)
-            sed -n '8,17p' "$0" | sed 's/^# \{0,1\}//'
+            # A heredoc rather than sed-ing a line range out of this file's own
+            # header: the range silently prints the wrong lines the moment the
+            # header grows, and this file is generated, so it will.
+            cat <<EOF
+Build $APP_NAME.app, sign it, and install it to your iPhone.
+
+Usage:
+  ./build.sh                 build, sign, install to connected iPhone (default)
+  ./build.sh --no-install    build + sign only, stage into ./build/$APP_NAME.app
+  ./build.sh -n              short form of --no-install
+  ./build.sh --device <id>   target a specific device (else first available)
+  ./build.sh -v              verbose xcodebuild output
+  ./build.sh -h              show this help
+EOF
             exit 0
             ;;
         *)
@@ -42,7 +61,7 @@ done
 
 cd "$(dirname "$0")"
 
-# 0. Signing config. project.yml pulls DEVELOPMENT_TEAM from Config.xcconfig,
+# 0. Signing config. The .xcodeproj reads DEVELOPMENT_TEAM from Config.xcconfig,
 #    which is gitignored (per-machine). On a fresh clone it won't exist yet.
 if [ ! -f "Config.xcconfig" ]; then
     echo "error: Config.xcconfig not found. Copy the template and set your Apple Team ID:"
@@ -52,8 +71,9 @@ if [ ! -f "Config.xcconfig" ]; then
     exit 1
 fi
 
-# 1. Regenerate project from project.yml. Somnya uses xcodegen — the .xcodeproj
-#    is a generated artifact, so this must run before xcodebuild can see it.
+# 1. Regenerate the project if this one uses xcodegen. Guarded rather than
+#    assumed: some of these commit the .xcodeproj directly, and this same script
+#    has to be right in both cases.
 if [ -f "project.yml" ]; then
     if ! command -v xcodegen >/dev/null 2>&1; then
         echo "error: xcodegen not installed. Install with: brew install xcodegen"
@@ -146,9 +166,10 @@ if [ "$INSTALL" = "1" ]; then
     if [ "$installed" = "1" ]; then
         echo "✓ $APP_NAME installed. Launch it from your home screen."
     else
-        echo "error: install failed after 3 attempts. Make sure the iPhone is unlocked"
-        echo "       and stays connected, then re-run ./build.sh. The signed .app is at"
-        echo "       $OUT_DIR/$APP_NAME.app."
+        echo "error: install failed after 3 attempts. Wake the phone and check it is on"
+        echo "       the same network as this Mac — a sleeping phone paired over Wi-Fi is"
+        echo "       the usual cause. Then re-run ./build.sh. The signed .app is at"
+        echo "       $OUT_DIR/$APP_NAME.app if you would rather install it from Xcode."
         exit 1
     fi
 else
