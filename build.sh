@@ -155,20 +155,38 @@ if [ "$INSTALL" = "1" ]; then
     # "Connection interrupted" (CoreDeviceError 3002). Retry a couple of times
     # before giving up — the identical command usually succeeds on the next try.
     installed=0
+    install_log=$(mktemp)
     for attempt in 1 2 3; do
-        if xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"; then
+        # PIPESTATUS, not the pipeline's status: `cmd | tee` returns tee's exit
+        # code, which is always 0 and would make every failure look like success.
+        xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH" 2>&1 | tee "$install_log"
+        if [ "${PIPESTATUS[0]}" -eq 0 ]; then
             installed=1
             break
+        fi
+        # Only a dropped link is worth retrying. A free Apple ID may hold just 3
+        # apps on a device at once, and that refusal is permanent — retrying it
+        # wastes 6 seconds and then blames a sleeping phone for a full quota.
+        if grep -q "MIFreeProfileValidatedAppTracker\\|free development profiles" "$install_log"; then
+            rm -f "$install_log"
+            echo "error: install refused — this device already holds the maximum number of"
+            echo "       apps allowed by a free Apple ID (3). Delete one of your other"
+            echo "       self-built apps from the phone, then re-run ./build.sh. A paid"
+            echo "       Apple Developer account removes the limit. The signed .app is at"
+            echo "       $OUT_DIR/$APP_NAME.app if you would rather install it from Xcode."
+            exit 1
         fi
         echo "  install attempt $attempt failed (transient device-link error); retrying..."
         sleep 2
     done
+    rm -f "$install_log"
     if [ "$installed" = "1" ]; then
         echo "✓ $APP_NAME installed. Launch it from your home screen."
     else
-        echo "error: install failed after 3 attempts. Wake the phone and check it is on"
-        echo "       the same network as this Mac — a sleeping phone paired over Wi-Fi is"
-        echo "       the usual cause. Then re-run ./build.sh. The signed .app is at"
+        echo "error: install failed after 3 attempts. If devicectl's output above does not"
+        echo "       say why, wake the phone and check it is on the same network as this"
+        echo "       Mac — a sleeping phone paired over Wi-Fi is the usual cause. Then"
+        echo "       re-run ./build.sh. The signed .app is at"
         echo "       $OUT_DIR/$APP_NAME.app if you would rather install it from Xcode."
         exit 1
     fi
