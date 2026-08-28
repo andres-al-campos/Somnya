@@ -9,15 +9,19 @@ import AVFoundation
 /// still works but warns, and the new one doesn't exist below 26, so the
 /// deployment target (iOS 17) rules out a plain rename.
 enum AudioSessionConfig {
+    /// `AVAudioSessionCategoryOptionAllowBluetooth`, spelled by raw value.
+    ///
+    /// Referring to `.allowBluetooth` by name warns: iOS 26 renamed it to
+    /// `.allowBluetoothHFP` and back-dated the deprecation to iOS 8.0, so even
+    /// a correctly `#available`-guarded use trips it. The value is fixed ABI —
+    /// `= 0x4` in AVAudioSessionTypes.h — since it crosses into C.
+    private static let allowBluetoothLegacy = AVAudioSession.CategoryOptions(rawValue: 0x4)
+
     static var captureOptions: AVAudioSession.CategoryOptions {
         if #available(iOS 26.0, *) {
             return [.mixWithOthers, .defaultToSpeaker, .allowBluetoothHFP]
         } else {
-            // Warns as deprecated "since iOS 8.0" (Apple back-dated the
-            // rename), but it is the only spelling that compiles below iOS 26
-            // and this branch only runs there. Left named rather than silenced
-            // with its raw value, which would hide what the option is.
-            return [.mixWithOthers, .defaultToSpeaker, .allowBluetooth]
+            return [.mixWithOthers, .defaultToSpeaker, allowBluetoothLegacy]
         }
     }
 }
