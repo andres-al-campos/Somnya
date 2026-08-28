@@ -1,6 +1,27 @@
 import Foundation
 import AVFoundation
 
+/// The capture session's category options, in one place because
+/// CalibrationTester must mirror them exactly — a measured level only matches
+/// recorded nights if the route is configured identically.
+///
+/// `.allowBluetooth` was renamed `.allowBluetoothHFP` in iOS 26. The old name
+/// still works but warns, and the new one doesn't exist below 26, so the
+/// deployment target (iOS 17) rules out a plain rename.
+enum AudioSessionConfig {
+    static var captureOptions: AVAudioSession.CategoryOptions {
+        if #available(iOS 26.0, *) {
+            return [.mixWithOthers, .defaultToSpeaker, .allowBluetoothHFP]
+        } else {
+            // Warns as deprecated "since iOS 8.0" (Apple back-dated the
+            // rename), but it is the only spelling that compiles below iOS 26
+            // and this branch only runs there. Left named rather than silenced
+            // with its raw value, which would hide what the option is.
+            return [.mixWithOthers, .defaultToSpeaker, .allowBluetooth]
+        }
+    }
+}
+
 /// Holds an audio session so the app keeps running when the phone locks. This is the only
 /// way iOS lets a sensor app persist with the screen off — the accelerometer rides along on
 /// the process this keeps alive. Records at a low sample rate (2 kHz target, per spec) since
@@ -41,7 +62,7 @@ final class AudioKeepalive {
             // calibrated capture, which buries faint breathing in the noise floor; .default keeps
             // gain/AGC on so quiet breathing can rise above the floor at nightstand distance.
             try session.setCategory(.playAndRecord, mode: .default,
-                                    options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth])
+                                    options: AudioSessionConfig.captureOptions)
             try session.setActive(true)
         } catch {
             SomnyaLog.capture("Audio session activation FAILED: \(error.localizedDescription). Tracking may stop when the screen locks. Check microphone permission in Settings → Somnya.")

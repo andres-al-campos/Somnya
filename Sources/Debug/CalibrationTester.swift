@@ -45,7 +45,7 @@ final class CalibrationTester: ObservableObject {
         do {
             // Mirror AudioKeepalive EXACTLY so the level we measure matches recorded nights.
             try session.setCategory(.playAndRecord, mode: .default,
-                                    options: [.mixWithOthers, .defaultToSpeaker, .allowBluetooth])
+                                    options: AudioSessionConfig.captureOptions)
             try session.setActive(true)
         } catch {
             errorMessage = "Couldn't start the microphone. Make sure mic permission is granted (Settings → Somnya → Microphone) and the phone isn't in a call, then try again."
