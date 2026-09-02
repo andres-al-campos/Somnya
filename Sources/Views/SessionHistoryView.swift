@@ -140,6 +140,14 @@ struct SessionHistoryView: View {
                         .font(.caption2.bold())
                         .foregroundStyle(.green)
                 }
+                // A recovered night was never cleanly stopped — capture died and the end time is
+                // a backdated estimate. Flagged so it isn't read as a full night's data.
+                if session.wasRecovered {
+                    Text("TRUNCATED")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Truncated — tracking stopped unexpectedly")
+                }
                 Spacer()
                 if session.exportedAt != nil {
                     Image(systemName: "checkmark.icloud")

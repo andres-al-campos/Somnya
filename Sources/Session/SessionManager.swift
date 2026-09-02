@@ -20,10 +20,28 @@ final class SessionManager: ObservableObject {
     private let motion = MotionCapture()
     private let audio = AudioKeepalive()
     private var aggregator: WindowAggregator?
+    /// Kept alive for the process lifetime so the Shortcuts stop signal stays observed.
+    private var stopSignalToken: Int32?
 
     init(context: ModelContext) {
         self.context = context
         recoverOrphanedSessions()
+        observeStopSignal()
+    }
+
+    /// Listen for `StopSessionIntent` (Shortcuts/Siri/alarm automation). Registered once for the
+    /// process lifetime rather than per-session, since the intent can fire at any time and a
+    /// no-active-session stop is already a safe no-op.
+    private func observeStopSignal() {
+        stopSignalToken = StopSessionSignal.observe { [weak self] in
+            guard let self else { return }
+            guard self.currentSession != nil else {
+                SomnyaLog.lifecycle("Stop signal received — no active session, ignoring")
+                return
+            }
+            SomnyaLog.lifecycle("Stop signal received from Shortcuts intent")
+            self.stopSession(reason: "shortcut intent", endReason: .intent)
+        }
     }
 
     /// A clean stop always sets `endTime`. So any session WITHOUT one at launch is a crash
@@ -37,6 +55,8 @@ final class SessionManager: ObservableObject {
         for s in orphans {
             let lastWindow = s.windows.map(\.startTime).max()
             s.endTime = lastWindow ?? s.startTime
+            // Mark it so history can show this end time is an estimate, not a real wake.
+            s.endReason = .recovered
         }
         do {
             try context.save()
@@ -140,7 +160,7 @@ final class SessionManager: ObservableObject {
     }
 
     /// Stop the active session, set its end time, and release the screen lock.
-    func stopSession(reason: String = "manual stop") {
+    func stopSession(reason: String = "manual stop", endReason: EndReason = .manualStop) {
         guard let session = currentSession else {
             SomnyaLog.lifecycle("stopSession ignored — no active session")
             return
@@ -154,6 +174,7 @@ final class SessionManager: ObservableObject {
         aggregator = nil
 
         session.endTime = Date()
+        session.endReason = endReason
         do {
             try context.save()
             SomnyaLog.persist("SleepSession finalized endTime=\(session.endTime!)")

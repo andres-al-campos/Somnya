@@ -11,6 +11,20 @@ enum DetectionMethod: String, Codable {
     case auto
 }
 
+/// Why a session ended. Distinguishes a clean stop from one the app never got to close —
+/// the latter means capture died mid-night and the end time is a backdated estimate, not a
+/// real wake time. Without this the two are indistinguishable in history, so a truncated
+/// night silently reads as a real one.
+enum EndReason: String, Codable {
+    /// User tapped Stop in the app.
+    case manualStop = "manual_stop"
+    /// Stopped by the Shortcuts/Siri intent (e.g. an alarm automation).
+    case intent
+    /// Never cleanly stopped — closed at launch by orphan recovery. End time is the last
+    /// window's timestamp, so the session is truncated at whatever point capture died.
+    case recovered
+}
+
 /// Three-class staging target. N1/N2 are collapsed into light+wake (undetectable without EEG).
 /// `unknown` is the honest default before/without a confident classification.
 enum SleepStage: String, Codable {
@@ -57,6 +71,9 @@ final class SleepSession {
     /// batch export skips nights already pulled to the Mac. It's the app's belief, not a Mac receipt —
     /// if the files are lost on the Mac, "export all" re-exports regardless of this stamp.
     var exportedAt: Date?
+    /// How the session ended. nil on sessions recorded before this was added (they predate the
+    /// distinction and can't be reclassified retroactively).
+    var endReasonRaw: String?
     /// The device's UTC offset (seconds) at capture, e.g. -18000 for UTC-5. Stored so timestamps —
     /// which are written as UTC — can be shown in the LOCAL clock the night was actually recorded in.
     /// Captured automatically from TimeZone.current; nil on sessions recorded before this was added.
@@ -77,6 +94,16 @@ final class SleepSession {
         set { detectionMethodRaw = newValue.rawValue }
     }
 
+    /// nil for sessions that predate end-reason tracking, or for one still recording.
+    var endReason: EndReason? {
+        get { endReasonRaw.flatMap(EndReason.init(rawValue:)) }
+        set { endReasonRaw = newValue?.rawValue }
+    }
+
+    /// True when this session was closed by crash recovery rather than a real stop — its end
+    /// time is an estimate and the night is cut short at whatever point capture died.
+    var wasRecovered: Bool { endReason == .recovered }
+
     var isActive: Bool { endTime == nil }
 
     var duration: TimeInterval {
@@ -92,6 +119,7 @@ final class SleepSession {
         self.notes = nil
         self.restednessRating = nil
         self.exportedAt = nil
+        self.endReasonRaw = nil
         self.utcOffsetSeconds = TimeZone.current.secondsFromGMT(for: startTime)
         self.windows = []
         self.phases = []

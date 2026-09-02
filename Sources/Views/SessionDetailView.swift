@@ -71,6 +71,8 @@ struct SessionDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
 
+                if session.wasRecovered { truncatedNotice }
+
                 NavigationLink {
                     RawDataView(session: session)
                 } label: {
@@ -376,6 +378,24 @@ struct SessionDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Shown when a session was closed by crash recovery rather than a real stop. Without this the
+    /// night looks complete, and its duration/onset read as real numbers when they aren't.
+    private var truncatedNotice: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Truncated recording")
+                    .font(.caption.bold())
+                Text("Tracking stopped unexpectedly — the app was closed or killed before this session ended. The end time is an estimate from the last recorded window, so the duration is a floor, not the real night. Keep the app open and grant mic permission for overnight tracking.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var emptyState: some View {
