@@ -100,24 +100,44 @@ XCB_ARGS=(
     clean build
 )
 
+BUILD_STATUS=0
 if [ "$VERBOSE" = "1" ]; then
-    xcodebuild "${XCB_ARGS[@]}"
+    xcodebuild "${XCB_ARGS[@]}" || BUILD_STATUS=$?
 elif command -v xcbeautify >/dev/null 2>&1; then
     set -o pipefail
-    xcodebuild "${XCB_ARGS[@]}" | xcbeautify
+    # An `if` condition is exempt from `set -e`, so a failed build reaches the check
+    # below instead of aborting here. PIPESTATUS must be read on the very next line:
+    # any intervening command (`|| true` included) resets it.
+    if xcodebuild "${XCB_ARGS[@]}" | xcbeautify; then :; fi
+    BUILD_STATUS=${PIPESTATUS[0]}
 else
     set -o pipefail
     # Surface the actionable signing errors; otherwise just the build verdict.
-    if ! xcodebuild "${XCB_ARGS[@]}" 2>&1 | tee "$DERIVED_DATA/build.log" \
-        | grep -E "(error|warning): |\*\* BUILD (SUCCEEDED|FAILED) \*\*"; then
-        :
-    fi
+    # The `if` wrapper keeps `set -e` from aborting on a failed build (and on grep
+    # finding nothing to print). BUILD_STATUS must be assigned on the very next
+    # line — any intervening command resets PIPESTATUS. Reading it is the whole
+    # point: this wrapper used to discard xcodebuild's status, so a failed compile
+    # fell through and installed the PREVIOUS build's .app to the phone.
+    if xcodebuild "${XCB_ARGS[@]}" 2>&1 | tee "$DERIVED_DATA/build.log" \
+        | grep -E "(error|warning): |\*\* BUILD (SUCCEEDED|FAILED) \*\*"; then :; fi
+    BUILD_STATUS=${PIPESTATUS[0]}
     if grep -q "No Accounts\|No profiles for\|Signing for" "$DERIVED_DATA/build.log" 2>/dev/null; then
         echo "error: code signing failed. Open Xcode → Settings → Accounts and sign in"
         echo "       with your Apple ID, then set DEVELOPMENT_TEAM in Config.xcconfig"
         echo "       (copy it from Config.xcconfig.example) and re-run ./build.sh."
         exit 1
     fi
+fi
+
+# Trust xcodebuild's exit code, not the presence of a .app. `clean build` leaves the
+# previous run's bundle in place when compilation fails, so the directory check below
+# passes on a stale artifact — which is how a failed build used to report success and
+# then install the old binary.
+if [ "$BUILD_STATUS" -ne 0 ]; then
+    echo "error: build failed (xcodebuild exit $BUILD_STATUS). Nothing was installed."
+    echo "       Full log: $DERIVED_DATA/build.log"
+    echo "       Re-run with -v to see the full xcodebuild output."
+    exit "$BUILD_STATUS"
 fi
 
 APP_PATH="$DERIVED_DATA/Build/Products/Debug-iphoneos/$APP_NAME.app"
