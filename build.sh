@@ -86,6 +86,7 @@ fi
 # 2. Build + sign. Debug into a controlled derived-data dir so we know exactly
 #    where the .app lands — same contract ReSign uses. -allowProvisioningUpdates
 #    lets Xcode create/refresh the free-account provisioning profile headlessly.
+#    No `clean`: the dir persists, so an unchanged rebuild takes ~2s, not ~15s.
 DERIVED_DATA="$PWD/build/DerivedData"
 mkdir -p "$DERIVED_DATA"
 
@@ -97,7 +98,7 @@ XCB_ARGS=(
     -destination 'generic/platform=iOS'
     -derivedDataPath "$DERIVED_DATA"
     -allowProvisioningUpdates
-    clean build
+    build
 )
 
 BUILD_STATUS=0
@@ -129,9 +130,9 @@ else
     fi
 fi
 
-# Trust xcodebuild's exit code, not the presence of a .app. `clean build` leaves the
-# previous run's bundle in place when compilation fails, so the directory check below
-# passes on a stale artifact — which is how a failed build used to report success and
+# Trust xcodebuild's exit code, not the presence of a .app. A failed build leaves
+# the previous run's bundle in place, so the directory check below passes on a
+# stale artifact — which is how a failed build used to report success and
 # then install the old binary.
 if [ "$BUILD_STATUS" -ne 0 ]; then
     echo "error: build failed (xcodebuild exit $BUILD_STATUS). Nothing was installed."
