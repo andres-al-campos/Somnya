@@ -7,6 +7,10 @@ leaving the phone.
 What a user can do, and the checks for each, are in `features/`. The
 walled_garden `AGENTS.md` Principles hold here too.
 
+Somnya is a work in progress, so it has no Principles of its own yet. When it
+settles, the first candidate is the README's "one rule": report what was
+measured, label what was estimated, and never guess with a confident face.
+
 ## Building
 
 An iOS app built and installed from the command line. `build.sh` is the entry
