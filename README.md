@@ -1,5 +1,7 @@
 # Somnya
 
+Updated 2026-10-22 23:44, at 0.4.
+
 An on-device iPhone sleep tracker. It listens and senses overnight to detect movement,
 breathing, and heartbeat, and reports what it actually measured instead of inventing a
 sleep score.
@@ -44,6 +46,7 @@ cp Config.xcconfig.example Config.xcconfig
 
 ./build.sh                 # build, sign, install to the connected iPhone (default)
 ./build.sh --no-install    # build + sign only, stage into ./build/Somnya.app
+./build.sh check           # run the checks in laws/ and drive/, no build
 ./build.sh -h              # full usage
 ```
 
