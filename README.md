@@ -1,6 +1,6 @@
 # Somnya
 
-Updated 2026-10-22 23:44, at 0.4.
+Updated 2026-10-22 23:57, at 0.4.
 
 An on-device iPhone sleep tracker. It listens and senses overnight to detect movement,
 breathing, and heartbeat, and reports what it actually measured instead of inventing a
@@ -27,7 +27,7 @@ estimate with an honest confidence, or "not enough data." See
   stillness, posture, breathing rate and regularity, and a BCG-based heartbeat estimate.
 - Sleep onset and wake time are detected to bookend the sleep window.
 - Everything is processed and stored on device (SwiftData). Nothing leaves the phone.
-  Sessions can be exported as CSV/JSON for offline analysis.
+  Sessions can be exported as JSON for offline analysis.
 
 ## Requirements
 
@@ -69,7 +69,7 @@ Swift.
 
 ```sh
 cd analysis
-uv run somnya-analyze    # plots/threshold tuning over exported CSVs
+uv run somnya-analyze    # plots/threshold tuning over exported sessions
 uv run somnya-stats      # the per-sleep stats breakdown
 ```
 
@@ -85,7 +85,7 @@ Sources/
   Model/      SwiftData models, config
   Intents/    Shortcuts "start session" action
   Views/      tracking, history, session detail, calibration, debug
-  Debug/      CSV/JSON export, calibration + tone testers, logging
+  Debug/      JSON export, calibration + tone testers, logging
 analysis/     offline Python analysis + the stats spec
 build.sh      regenerate + build + sign + install
 ```
