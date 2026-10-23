@@ -2,7 +2,7 @@
 # Build Somnya.app, sign it with your Apple ID, and install to your iPhone.
 #
 # GENERATED from walled_garden/_template/ios-build.sh — edit that and re-run
-# walled_garden/sync-build-scripts.sh, or the next sync overwrites this file.
+# walled_garden/_template/sync-build-scripts.sh, or the next sync overwrites this file.
 # It is committed here anyway so the project stays standalone: each of these is
 # its own repo, and a script sourced from a shared parent would be missing from
 # every clone.
@@ -17,10 +17,15 @@
 #   ./build.sh --no-install    # build + sign only, stage into ./build/Somnya.app
 #   ./build.sh -n              # short form of --no-install
 #   ./build.sh --device <id>   # target a specific device (else first available)
+#   ./build.sh check           # run the laws in laws/ and every drive (no build)
+#   ./build.sh drive [name]    # run every feature check in drive/, or one
 #   ./build.sh -v              # verbose xcodebuild output
 #   ./build.sh -h              # show this help
 
 set -euo pipefail
+
+# The pre-commit hook stamps the docs a commit changes (hooks/stamp-docs.mjs).
+git -C "$(dirname "$0")" rev-parse --git-dir >/dev/null 2>&1 && git -C "$(dirname "$0")" config core.hooksPath hooks || true
 
 APP_NAME=Somnya
 PROJECT="$APP_NAME.xcodeproj"
@@ -28,9 +33,19 @@ SCHEME="$APP_NAME"
 INSTALL=1
 VERBOSE=0
 DEVICE_ID=""
+MODE=build   # build | check | drive
+DRIVE_NAME=""
 
 while [ $# -gt 0 ]; do
+    # The word after `drive` is the feature to drive, not a flag.
+    if [ "$MODE" = "drive" ] && [ -z "$DRIVE_NAME" ] && [ "${1#-}" = "$1" ]; then
+        DRIVE_NAME="$1"
+        shift
+        continue
+    fi
     case "$1" in
+        check)           MODE=check ;;
+        drive)           MODE=drive ;;
         -n|--no-install) INSTALL=0 ;;
         -v|--verbose)    VERBOSE=1 ;;
         --device)        shift; DEVICE_ID="${1:-}" ;;
@@ -46,6 +61,8 @@ Usage:
   ./build.sh --no-install    build + sign only, stage into ./build/$APP_NAME.app
   ./build.sh -n              short form of --no-install
   ./build.sh --device <id>   target a specific device (else first available)
+  ./build.sh check           run the laws in laws/ and every drive (no build)
+  ./build.sh drive [name]    run every feature check in drive/, or one
   ./build.sh -v              verbose xcodebuild output
   ./build.sh -h              show this help
 EOF
@@ -60,6 +77,44 @@ EOF
 done
 
 cd "$(dirname "$0")"
+
+# Every feature check in drive/, or the one named. A name with no script is an
+# error, so a typo can't pass by running nothing.
+drive() {
+    local name="$1" failed=0 ran=0
+    if [ -n "$name" ]; then
+        if [ ! -f "drive/$name.sh" ]; then
+            echo "error: no drive named \"$name\": there's no drive/$name.sh. Fix the name, or write that check."
+            local there
+            there=$(ls drive 2>/dev/null | sed -n 's/\.sh$//p' | tr '\n' ' ' || true)
+            echo "       The ones there: ${there:-none yet}"
+            return 1
+        fi
+        "drive/$name.sh"
+        return $?
+    fi
+    for d in drive/*.sh; do
+        [ -f "$d" ] || continue
+        ran=1
+        "$d" || failed=1
+    done
+    [ "$ran" = 1 ] || echo "No drives yet: drive/ has no checks. features/README.md lists what isn't covered."
+    return $failed
+}
+
+if [ "$MODE" = "drive" ]; then
+    if drive "$DRIVE_NAME"; then exit 0; else exit 1; fi
+fi
+
+if [ "$MODE" = "check" ]; then
+    failed=0
+    for law in laws/*.sh; do
+        [ -f "$law" ] || continue
+        "$law" || failed=1
+    done
+    drive "" || failed=1
+    exit $failed
+fi
 
 # 0. Signing config. The .xcodeproj reads DEVELOPMENT_TEAM from Config.xcconfig,
 #    which is gitignored (per-machine). On a fresh clone it won't exist yet.
