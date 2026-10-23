@@ -1,5 +1,14 @@
 # Somnya
 
+A person comes to Somnya to find out how they actually slept, from what the
+phone on the mattress measured overnight, with nothing guessed and nothing
+leaving the phone.
+
+What a user can do, and the checks for each, are in `features/`. The
+walled_garden `AGENTS.md` Principles hold here too.
+
+## Building
+
 An iOS app built and installed from the command line. `build.sh` is the entry
 point — prefer it over raw `xcodebuild`, and never build by driving the Xcode GUI.
 
@@ -8,6 +17,8 @@ point — prefer it over raw `xcodebuild`, and never build by driving the Xcode 
 ./build.sh --no-install build and sign only (use this to check it compiles)
 ./build.sh --device <id> target a specific device
 ./build.sh -v           verbose xcodebuild output
+./build.sh check        run the laws in laws/ and every drive, no build
+./build.sh drive [name] run every feature check in drive/, or one
 ```
 
 The no-arg path leaves the app installed on the phone rather than stopping at a
