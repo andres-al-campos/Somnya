@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-10-23 00:01, at 0.4.
+Updated 2026-10-25 11:38, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows

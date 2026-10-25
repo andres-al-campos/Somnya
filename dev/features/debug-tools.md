@@ -1,6 +1,6 @@
 # Debug tools
 
-Updated 2026-10-23 00:01, at 0.4.
+Updated 2026-10-25 11:38, at 0.4.
 
 Tools for checking the sensors and the app's own log while the capture
 pipeline is being built.

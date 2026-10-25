@@ -44,7 +44,7 @@ cp Config.xcconfig.example Config.xcconfig
 
 ./build.sh                 # build, sign, install to the connected iPhone (default)
 ./build.sh --no-install    # build + sign only, stage into ./build/Somnya.app
-./build.sh check           # run the checks in laws/ and drive/, no build
+./build.sh check           # run the checks in tests/ and tests/drive/, no build
 ./build.sh -h              # full usage
 ```
 
