@@ -1,7 +1,5 @@
 # Somnya
 
-Updated 2026-10-22 23:57, at 0.4.
-
 An on-device iPhone sleep tracker. It listens and senses overnight to detect movement,
 breathing, and heartbeat, and reports what it actually measured instead of inventing a
 sleep score.
