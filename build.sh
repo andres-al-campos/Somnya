@@ -17,7 +17,8 @@
 #   ./build.sh --no-install    # build + sign only, stage into ./build/Somnya.app
 #   ./build.sh -n              # short form of --no-install
 #   ./build.sh --device <id>   # target a specific device (else first available)
-#   ./build.sh check           # run the laws in tests/ and every drive (no build)
+#   ./build.sh check           # run the laws in tests/ (no build)
+#   ./build.sh check --drives  # the laws, then every drive in tests/drive/
 #   ./build.sh drive [name]    # run every feature check in tests/drive/, or one
 #   ./build.sh -v              # verbose xcodebuild output
 #   ./build.sh -h              # show this help
@@ -35,6 +36,7 @@ VERBOSE=0
 DEVICE_ID=""
 MODE=build   # build | check | drive
 DRIVE_NAME=""
+DRIVES=0   # check runs the drives only with --drives
 
 while [ $# -gt 0 ]; do
     # The word after `drive` is the feature to drive, not a flag.
@@ -46,6 +48,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         check)           MODE=check ;;
         drive)           MODE=drive ;;
+        --drives)        DRIVES=1 ;;
         -n|--no-install) INSTALL=0 ;;
         -v|--verbose)    VERBOSE=1 ;;
         --device)        shift; DEVICE_ID="${1:-}" ;;
@@ -61,7 +64,8 @@ Usage:
   ./build.sh --no-install    build + sign only, stage into ./build/$APP_NAME.app
   ./build.sh -n              short form of --no-install
   ./build.sh --device <id>   target a specific device (else first available)
-  ./build.sh check           run the laws in tests/ and every drive (no build)
+  ./build.sh check           run the laws in tests/ (no build)
+  ./build.sh check --drives  the laws, then every drive in tests/drive/
   ./build.sh drive [name]    run every feature check in tests/drive/, or one
   ./build.sh -v              verbose xcodebuild output
   ./build.sh -h              show this help
@@ -112,7 +116,11 @@ if [ "$MODE" = "check" ]; then
         [ -f "$law" ] || continue
         "$law" || failed=1
     done
-    drive "" || failed=1
+    if [ "$DRIVES" = 1 ]; then
+        drive "" || failed=1
+    else
+        echo "The drives didn't run: ./build.sh check --drives runs them."
+    fi
     exit $failed
 fi
 

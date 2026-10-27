@@ -21,7 +21,8 @@ point — prefer it over raw `xcodebuild`, and never build by driving the Xcode 
 ./build.sh --no-install build and sign only (use this to check it compiles)
 ./build.sh --device <id> target a specific device
 ./build.sh -v           verbose xcodebuild output
-./build.sh check        run the laws in tests/ and every drive, no build
+./build.sh check        run the laws in tests/, no build
+./build.sh check --drives  the laws, then every drive in tests/drive/
 ./build.sh drive [name] run every feature check in tests/drive/, or one
 ```
 
