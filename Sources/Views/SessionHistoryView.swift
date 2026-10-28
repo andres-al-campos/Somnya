@@ -10,6 +10,10 @@ struct SessionHistoryView: View {
     @State private var exportItem: ExportFile?
     @State private var exportError: String?
     @State private var isExporting = false
+    @State private var syncProgress: String?
+    @State private var syncResult: String?
+    @State private var syncFolderName: String?
+    @State private var isPickingSyncFolder = false
 
     /// `sheet(item:)` wrapper — driving presentation off the payload avoids the empty-panel race where
     /// the sheet opens before the file URL is committed. Same pattern as RawDataView.
@@ -62,6 +66,22 @@ struct SessionHistoryView: View {
                         Label("Export all (\(exportable.count))", systemImage: "square.and.arrow.up.on.square")
                     }
                     .disabled(exportable.isEmpty)
+
+                    Divider()
+                    if let syncFolderName {
+                        Button {
+                            sync()
+                        } label: {
+                            Label("Sync to \(syncFolderName)", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(exportable.isEmpty)
+                    }
+                    Button {
+                        isPickingSyncFolder = true
+                    } label: {
+                        Label(syncFolderName == nil ? "Choose sync folder…" : "Change sync folder…",
+                              systemImage: "folder")
+                    }
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
@@ -76,7 +96,7 @@ struct SessionHistoryView: View {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 12) {
                         ProgressView()
-                        Text("Preparing export…").font(.callout)
+                        Text(syncProgress ?? "Preparing export…").font(.callout)
                     }
                     .padding(24)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -87,6 +107,21 @@ struct SessionHistoryView: View {
         .animation(.easeInOut(duration: 0.15), value: isExporting)
         .sheet(item: $exportItem) { item in
             ShareSheet(items: [item.url])
+        }
+        .onAppear { syncFolderName = FolderSync.folder()?.lastPathComponent }
+        .fileImporter(isPresented: $isPickingSyncFolder, allowedContentTypes: [.folder]) { result in
+            do {
+                let url = try result.get()
+                try FolderSync.setFolder(url)
+                syncFolderName = url.lastPathComponent
+            } catch {
+                exportError = "Couldn't use that folder: \(error.localizedDescription) Pick a folder you can open in the Files app and try again."
+            }
+        }
+        .alert("Sync finished", isPresented: .constant(syncResult != nil)) {
+            Button("OK") { syncResult = nil }
+        } message: {
+            Text(syncResult ?? "")
         }
         .alert("Export failed", isPresented: .constant(exportError != nil)) {
             Button("OK") { exportError = nil }
@@ -101,6 +136,27 @@ struct SessionHistoryView: View {
     ///
     /// Serializing reads managed objects (main actor); the heavy write+zip runs off-main so the UI keeps
     /// painting the spinner instead of freezing.
+    private func sync() {
+        guard !isExporting else { return }
+        isExporting = true
+        syncProgress = "Checking sync folder…"
+        Task {
+            defer { isExporting = false; syncProgress = nil }
+            do {
+                let written = try await FolderSync.sync(exportable) { done, total in
+                    syncProgress = "Syncing night \(done) of \(total)…"
+                }
+                try? context.save()
+                syncResult = written == 0
+                    ? "\(syncFolderName ?? "The folder") already has every night."
+                    : "Wrote \(written) night\(written == 1 ? "" : "s") to \(syncFolderName ?? "the folder")."
+            } catch {
+                try? context.save()  // keep the stamps of nights that made it before the failure
+                exportError = error.localizedDescription
+            }
+        }
+    }
+
     private func export(_ toExport: [SleepSession]) {
         guard !toExport.isEmpty, !isExporting else { return }
         isExporting = true

@@ -81,9 +81,14 @@ enum SessionJSON {
     static func writeTempFile(for session: SleepSession) throws -> URL {
         let data = try make(from: session)
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("somnya-session-\(stamp(for: session)).json")
+            .appendingPathComponent(fileName(for: session))
         try data.write(to: url, options: .atomic)
         return url
+    }
+
+    /// The file a night is written to, in the zip and in a sync folder alike.
+    static func fileName(for session: SleepSession) -> String {
+        "somnya-session-\(stamp(for: session)).json"
     }
 
     /// Filename-safe timestamp for a session (its start time), e.g. 2026-06-10T08-59-33.
@@ -120,7 +125,7 @@ enum SessionJSON {
         var blobs: [Blob] = []
         var failed: [(SleepSession, Error)] = []
         for s in sessions {
-            do { blobs.append(Blob(session: s, name: "somnya-session-\(stamp(for: s)).json", data: try make(from: s))) }
+            do { blobs.append(Blob(session: s, name: fileName(for: s), data: try make(from: s))) }
             catch { failed.append((s, error)) }
         }
         return SerializeResult(blobs: blobs, failed: failed)
