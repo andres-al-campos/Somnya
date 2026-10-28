@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Sync finished nights into a folder picked once in the system folder picker — usually the Mac's
 /// `analysis/sessions/` shared over SMB and connected in Files. The platform does the networking, so
@@ -33,6 +34,23 @@ enum FolderSync {
         guard let folder = folder() else { throw SyncError.noFolder }
         guard folder.startAccessingSecurityScopedResource() else { throw SyncError.unreachable }
         defer { folder.stopAccessingSecurityScopedResource() }
+
+        // iOS suspends the app soon after the screen locks or it's left, and a write over SMB stops
+        // with it: the first backlog sync stalled mid-night that way. So keep the screen on while it
+        // runs, and ask for grace time if it's backgrounded anyway. Restore the idle setting rather
+        // than clearing it, since tracking keeps the screen on too.
+        let app = UIApplication.shared
+        let wasIdleDisabled = app.isIdleTimerDisabled
+        app.isIdleTimerDisabled = true
+        var grace = UIBackgroundTaskIdentifier.invalid
+        grace = app.beginBackgroundTask(withName: "FolderSync") {
+            app.endBackgroundTask(grace)
+            grace = .invalid
+        }
+        defer {
+            app.isIdleTimerDisabled = wasIdleDisabled
+            if grace != .invalid { app.endBackgroundTask(grace) }
+        }
 
         let present: Set<String>
         do {
