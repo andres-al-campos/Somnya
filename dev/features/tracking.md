@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-10-25 11:38, at 0.4.
+Updated 2026-10-28 20:30, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -44,7 +44,15 @@ By hand only: a real night on the phone, then its detail.
   check that first.
 - The Start shortcut has to open the app, because capture must run in the
   app's own process. The Stop shortcut deliberately doesn't.
-- A session left open when the app dies is closed at the next launch and
-  marked truncated in History.
+- A session whose capture died is closed at its last window and marked
+  truncated in History: at the next launch after a crash, or, if the app was
+  only suspended, when it next comes to the front or is stopped or started
+  and no window has landed for 10 minutes. On 42 of 130 nights (Jun–Oct
+  2026) capture stopped about half an hour after waking, and before this the
+  session stayed open until the next Stop, up to 23 hours later.
+- There's no auto-stop on waking. A pickup rule was simulated on every night
+  (`analysis/somnya_analyze/autostop.py`): the phone stays on the bed after
+  waking and the windows look like sleep, so it fired on 5 of 134 nights,
+  3 of them mid-sleep.
 - The main screen is a scaffold: it still says "v0.4 scaffold", and the
   planned single-scroll summary isn't built.

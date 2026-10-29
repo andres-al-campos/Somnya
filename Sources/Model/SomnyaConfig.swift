@@ -8,6 +8,10 @@ import Foundation
 enum SomnyaConfig {
     /// Window length for sensor aggregation.
     static let windowSeconds: Double = 30
+    /// No window for this long means capture died, not a pause: the app was suspended (most often
+    /// ~half an hour after waking, on 42 of 130 nights by Oct 2026) and the session sat open for
+    /// hours. Windows land every `windowSeconds`, so 10 minutes is twenty missed in a row.
+    static let captureStoppedSeconds: Double = 10 * 60
 
     /// A recording at/under this many seconds is "too short to be useful" — on stop, the app offers to
     /// discard it rather than silently keeping a 5-minute scrap that pollutes history and averages.

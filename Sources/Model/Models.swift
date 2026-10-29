@@ -20,8 +20,9 @@ enum EndReason: String, Codable {
     case manualStop = "manual_stop"
     /// Stopped by the Shortcuts/Siri intent (e.g. an alarm automation).
     case intent
-    /// Never cleanly stopped — closed at launch by orphan recovery. End time is the last
-    /// window's timestamp, so the session is truncated at whatever point capture died.
+    /// Never cleanly stopped — capture died (crash, or the app suspended) and the session was
+    /// closed later: at the next launch, or once the app saw its windows had stopped. End time is
+    /// the last window's, so the session is truncated at whatever point capture died.
     case recovered
 }
 

@@ -27,6 +27,29 @@ final class SessionManager: ObservableObject {
         self.context = context
         recoverOrphanedSessions()
         observeStopSignal()
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.closeIfCaptureStopped() }
+        }
+    }
+
+    /// Close the active session at its last window if no window has landed for
+    /// `captureStoppedSeconds`. Without this a session whose capture died when the app was
+    /// suspended stayed "active" until the next Stop, hours later, and read as a 23-hour night.
+    /// Returns whether it closed one.
+    @discardableResult
+    func closeIfCaptureStopped(now: Date = Date()) -> Bool {
+        guard let session = currentSession else { return false }
+        let lastWindow = session.windows.map(\.startTime).max() ?? session.startTime
+        guard now.timeIntervalSince(lastWindow) > SomnyaConfig.captureStoppedSeconds else { return false }
+        // Drop the partial window instead of flushing it: it holds only what arrived after the
+        // app woke, which would land hours past the real end.
+        aggregator = nil
+        finish(session, endTime: lastWindow.addingTimeInterval(SomnyaConfig.windowSeconds),
+               endReason: .recovered,
+               reason: "capture stopped \(Int(now.timeIntervalSince(lastWindow) / 60)) min before")
+        return true
     }
 
     /// Listen for `StopSessionIntent` (Shortcuts/Siri/alarm automation). Registered once for the
@@ -87,6 +110,9 @@ final class SessionManager: ObservableObject {
     func startSession(method: DetectionMethod) -> SleepSession {
         // If a session is already active, don't silently stack a second one.
         if let existing = currentSession {
+            if closeIfCaptureStopped() {
+                return startSession(method: method)
+            }
             SomnyaLog.lifecycle("startSession ignored — session already active (started \(existing.startTime))")
             return existing
         }
@@ -165,15 +191,21 @@ final class SessionManager: ObservableObject {
             SomnyaLog.lifecycle("stopSession ignored — no active session")
             return
         }
-        // Stop capture first so the last partial window is flushed before we finalize.
+        if closeIfCaptureStopped() { return }
+        // Flush the last partial window before finishing.
+        aggregator?.finalize()
+        aggregator = nil
+        finish(session, endTime: Date(), endReason: endReason, reason: reason)
+    }
+
+    private func finish(_ session: SleepSession, endTime: Date, endReason: EndReason, reason: String) {
         motion.stop()
         motion.onSample = nil
         motion.onRawMagnitude = nil
         audio.stop()
-        aggregator?.finalize()
         aggregator = nil
 
-        session.endTime = Date()
+        session.endTime = endTime
         session.endReason = endReason
         do {
             try context.save()
