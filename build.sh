@@ -219,14 +219,15 @@ echo "✓ Built & signed: $OUT_DIR/$APP_NAME.app"
 # 4. Install to the connected iPhone via devicectl.
 if [ "$INSTALL" = "1" ]; then
     if [ -z "$DEVICE_ID" ]; then
-        # First "available" physical device's identifier. Match it by shape
+        # First "available" or "connected" physical device's identifier (devicectl
+        # shows a phone on USB or awake on Wi-Fi as connected, a paired one as available). Match it by shape
         # rather than column position — the Name/Model columns have a variable
         # word count, so counting fields is unreliable. Both shapes: a UUID, or
         # a UDID (8-16 hex), which devicectl lists for a phone paired over
         # Wi-Fi. `|| true` lets an empty match reach the error below instead of
         # pipefail ending the script without a word.
         DEVICE_ID=$(xcrun devicectl list devices 2>/dev/null \
-            | grep available | grep -v simulated \
+            | grep -E 'available|connected' | grep -v simulated \
             | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}|[0-9A-F]{16})' \
             | head -1 || true)
     fi
