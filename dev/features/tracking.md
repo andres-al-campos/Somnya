@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-10-28 20:33, at 0.4.
+Updated 2026-10-28 20:30, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -50,13 +50,6 @@ By hand only: a real night on the phone, then its detail.
   and no window has landed for 10 minutes. On 42 of 130 nights (Jun–Oct
   2026) capture stopped about half an hour after waking, and before this the
   session stayed open until the next Stop, up to 23 hours later.
-- An alarm or call interrupts the microphone, and the keepalive resumes it
-  when the interruption ends, so stopping an alarm and dozing off again stays
-  recorded. Before that nothing resumed it. Unverified on a device: whether
-  iOS allows the resume while the app is in the background. The test is a
-  daytime one: start tracking, lock the phone, let an alarm ring and stop it,
-  wait 15 minutes, and check the windows kept coming. The simulator has no
-  Clock app, so it can't ring an alarm.
 - There's no auto-stop on waking. A pickup rule was simulated on every night
   (`analysis/somnya_analyze/autostop.py`): the phone stays on the bed after
   waking and the windows look like sleep, so it fired on 5 of 134 nights,

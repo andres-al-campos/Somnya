@@ -51,39 +51,6 @@ final class AudioKeepalive {
     /// Heartbeat: number of audio buffers seen, so we can prove flow without flooding logs.
     private var bufferCount = 0
 
-    private var interruptionObserver: NSObjectProtocol?
-
-    init() {
-        interruptionObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            self?.handleInterruption(note)
-        }
-    }
-
-    /// An alarm or a call takes the audio session and stops the engine. Nothing restarted it, so
-    /// iOS suspended the app soon after and the rest of the night went unrecorded — including the
-    /// sleep after stopping an alarm and dozing off again. Resume when the interruption ends.
-    private func handleInterruption(_ note: Notification) {
-        guard isActive,
-              let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-        switch type {
-        case .began:
-            SomnyaLog.capture("Audio INTERRUPTED (alarm, call or another app took the mic). Will resume when it ends.")
-        case .ended:
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-                if !engine.isRunning { try engine.start() }
-                SomnyaLog.capture("Audio RESUMED after interruption.")
-            } catch {
-                SomnyaLog.capture("Audio could NOT resume after interruption: \(error.localizedDescription). Capture will stop once iOS suspends the app; open Somnya to check it's still tracking.")
-            }
-        @unknown default:
-            break
-        }
-    }
-
     /// Start the audio session + engine. Returns false if it couldn't start (e.g. permission
     /// denied or activation failed) so the caller can reflect that honestly in guardrails.
     @discardableResult
