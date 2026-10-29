@@ -37,6 +37,9 @@ final class WindowAggregator {
     /// nil when no barometer. Kept as a closure so the aggregator stays decoupled from the sensor.
     var barometerProvider: (() -> (pressureKPa: Double?, relativeAltitudeM: Double?))?
 
+    /// Called with each window once it's saved (not the partial one flushed at stop).
+    var onWindow: ((SensorWindow) -> Void)?
+
     init(context: ModelContext, session: SleepSession) {
         self.context = context
         self.session = session
@@ -154,6 +157,7 @@ final class WindowAggregator {
         } catch {
             SomnyaLog.persist("FAILED to save SensorWindow: \(error)")
         }
+        if !partial { onWindow?(window) }
     }
 
     // MARK: - Feature computation

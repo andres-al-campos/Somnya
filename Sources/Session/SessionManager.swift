@@ -144,6 +144,17 @@ final class SessionManager: ObservableObject {
         agg.barometerProvider = { [weak self] in
             (self?.motion.latestPressureKPa, self?.motion.latestRelativeAltitudeM)
         }
+        var pickup = PickupDetector()
+        agg.onWindow = { [weak self] window in
+            guard let self, let pickedUp = pickup.observe(window) else { return }
+            // Defer: this runs inside the aggregator's flush, which stopping would tear down.
+            Task { @MainActor in
+                guard self.currentSession === session else { return }
+                self.aggregator = nil
+                self.finish(session, endTime: pickedUp, endReason: .pickup,
+                            reason: "phone picked up after sleep")
+            }
+        }
         aggregator = agg
         motion.onSample = { [weak self] sample in
             // MotionCapture delivers off the main thread; hop back for SwiftData + UI.

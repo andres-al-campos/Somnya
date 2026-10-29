@@ -1,9 +1,11 @@
-"""Auto-stop on pickup: end tracking once the phone has been off the bed for good. A sweep over real
-nights, kept for its answer: don't build this. On 134 nights (Jun–Oct 2026) it fired on at most 5,
-and 3 of those were mid-sleep. After waking the phone stays on the bed (median 24 recorded minutes
-after wake), and those windows look like sleep on every motion and audio feature, so neither a
-pickup nor an emptied bed shows up here. What the app does instead is close a session once its
-windows stop arriving (`SomnyaConfig.captureStoppedSeconds`).
+"""Auto-stop on pickup: end the night when the phone is picked up after sleep, usually to stop the
+alarm. The reference for the app's `PickupDetector`; change the two together.
+
+A pickup ends the night without judging whether it was the real morning one: anything recorded
+after the alarm isn't wanted. With the shipped settings (armed 120 min, off 1 min, share 1.0) it
+ended 100 of 134 nights (Jun–Oct 2026), 8 of them more than 15 min before the estimated wake.
+Waiting for the phone to stay off the bed for 10 min instead ended only 4: after the alarm the
+phone goes back on the bed.
 
 The rule runs window by window, seeing only the past, as the app does:
   • a window is OFF the bed when the gravity vector moved since the last window or the gyro is
@@ -39,7 +41,7 @@ def off_surface(df: pd.DataFrame) -> np.ndarray:
     return ~((dgrav < SURFACE_DGRAV) & (gyro < SURFACE_GYRO))
 
 
-def auto_stop(df: pd.DataFrame, *, armed_min=120.0, off_min=10.0, share=0.8) -> float | None:
+def auto_stop(df: pd.DataFrame, *, armed_min=120.0, off_min=1.0, share=1.0) -> float | None:
     """Minutes into the session where auto-stop would end it, or None if it never fires."""
     off = off_surface(df)
     mins = df["minutes"].to_numpy(dtype=float)

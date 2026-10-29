@@ -20,6 +20,8 @@ enum EndReason: String, Codable {
     case manualStop = "manual_stop"
     /// Stopped by the Shortcuts/Siri intent (e.g. an alarm automation).
     case intent
+    /// The phone was picked up after sleep (`PickupDetector`); the end is the pickup.
+    case pickup
     /// Never cleanly stopped — capture died (crash, or the app suspended) and the session was
     /// closed later: at the next launch, or once the app saw its windows had stopped. End time is
     /// the last window's, so the session is truncated at whatever point capture died.

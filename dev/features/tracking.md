@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-10-28 20:30, at 0.4.
+Updated 2026-10-28 20:42, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -21,6 +21,13 @@ overnight, with the screen locked.
   a warning with how to fix it; tracking goes on.
 - **Short recordings**: a night of 30 minutes or less asks whether to save or
   discard it.
+- **Auto-stop on pickup**: once the phone has lain on the bed for 2 hours,
+  picking it up for a minute (two windows off the bed in a row) ends the
+  night at the pickup. It doesn't judge whether the pickup was the morning
+  one: nothing after the alarm is wanted, so a pickup in the night ends it
+  too. `analysis/somnya_analyze/autostop.py` is the reference and the sweep
+  that chose the settings: 100 of 134 nights ended this way, 8 of them more
+  than 15 minutes before the estimated wake.
 - Starting while History or Debug is open goes back to the main screen.
 
 ## How to get to it
@@ -50,9 +57,5 @@ By hand only: a real night on the phone, then its detail.
   and no window has landed for 10 minutes. On 42 of 130 nights (Jun–Oct
   2026) capture stopped about half an hour after waking, and before this the
   session stayed open until the next Stop, up to 23 hours later.
-- There's no auto-stop on waking. A pickup rule was simulated on every night
-  (`analysis/somnya_analyze/autostop.py`): the phone stays on the bed after
-  waking and the windows look like sleep, so it fired on 5 of 134 nights,
-  3 of them mid-sleep.
 - The main screen is a scaffold: it still says "v0.4 scaffold", and the
   planned single-scroll summary isn't built.
