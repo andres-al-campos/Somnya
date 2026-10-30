@@ -35,6 +35,10 @@ The no-arg path leaves the app installed on the phone rather than stopping at a
   gitignored. Edit `project.yml` and run `xcodegen generate` (build.sh does this
   for you). Never edit the `.xcodeproj` — the change is erased on the next build.
 - **`Sources/` is grouped by layer** (Capture, Session, Model, Intents, Views, Debug); the README's project layout says what each holds.
+- **`Sources/Views/Theme.swift` is the design system**: ground, text, accent,
+  confidence colours, radii, spacing and type. A view takes its looks from
+  there; a new look goes there first. The mockup it came from is
+  `designs/style-tile.html` (gitignored).
 - **`Info.plist` lives at the repo root**, not inside `Sources/`. Inside `Sources/`
   it is handled as both the plist and a bundled resource, and that collision
   silently corrupted the built plist here once already — down to just the
