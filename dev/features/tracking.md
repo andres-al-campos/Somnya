@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-10-28 20:42, at 0.4.
+Updated 2026-10-31 13:45, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -25,7 +25,12 @@ overnight, with the screen locked.
   picking it up for a minute (two windows off the bed in a row) ends the
   night at the pickup. It doesn't judge whether the pickup was the morning
   one: nothing after the alarm is wanted, so a pickup in the night ends it
-  too. `analysis/somnya_analyze/autostop.py` is the reference and the sweep
+  too. Why: going back to sleep after the alarm does happen, but telling
+  that apart from a phone left on an empty bed is a false-positive judgement
+  not worth making (owner, 29 Oct). The recordings agree: after 10 of the 100
+  pickups the phone lay still on the bed for 30+ min, and neither breathing
+  confidence nor loudness differs from the sleep before it, so the signals
+  can't tell an occupied bed from an empty one. `analysis/somnya_analyze/autostop.py` is the reference and the sweep
   that chose the settings: 100 of 134 nights ended this way, 8 of them more
   than 15 minutes before the estimated wake.
 - Starting while History or Debug is open goes back to the main screen.
