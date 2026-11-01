@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-10-31 20:56, at 0.4.
+Updated 2026-10-31 21:02, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -37,7 +37,16 @@ By hand only: open a recorded night.
   confidence 0.23, a quarter of windows at 0.3 or more, the same as the
   sleep of 29–31 Oct (0.22–0.24, 19–23%). So a breathing rate read at these
   confidences may be noise, and anything that leans on breathing confidence
-  (the fall-asleep estimate does) leans on noise too.
+  (the fall-asleep estimate does) leans on noise too. The empty bed even got
+  a breathing rate (13.3/min) in the night's stats.
+- Heart rate passed the same control: the empty bed found a pulse in 8% of
+  windows at scattered rates (median 87, spread 36), with no heart rate in
+  its stats, while the nights of 29–31 Oct found one in 13–18% at a steady
+  53/min (spread about 6).
+- Breathing from motion hasn't been tested fairly: the stored accel and gyro
+  envelopes are magnitudes with gravity removed, and a breath tilts the
+  phone, which iOS counts as a change in gravity. Gravity is kept once per
+  window, too coarse for a breath.
 
 - Somnya doesn't show sleep stages or a sleep score: lying awake and still
   looks the same as deep sleep to an accelerometer. `analysis/STATS_SPEC.md`
