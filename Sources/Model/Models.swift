@@ -181,8 +181,12 @@ final class SensorWindow {
     /// Dense accel-magnitude envelope (`SomnyaConfig.accelEnvelopeHz`, gravity-removed) for this window. Captured so the
     /// breathing estimator can run on BED MOTION offline (ballistocardiography) — a silent,
     /// emission-free alternative to the mic when the phone rests on the mattress. Same "capture
-    /// dense, re-slice forever" rationale as the audio envelope.
+    /// dense, re-slice forever" rationale as the audio envelope. Read it through `accelSamples`.
+    /// This attribute holds nights recorded before Nov 2026; new ones use `accelEnvelopePacked`.
     var accelEnvelope: [Double]?
+    /// The same envelope as raw Float32 bytes: 3.8 KB a window where the [Double] above is archived
+    /// at 19 KB, and on seven real nights rounding to Float32 left the heart-rate track unchanged.
+    var accelEnvelopePacked: Data?
     /// Dense gyro-magnitude envelope, recorded until Nov 2026. Fusing it with accel for heart rate
     /// was tested on five nights and made the track worse, so new windows keep only `gyroMean`.
     var gyroEnvelope: [Double]?
@@ -269,7 +273,7 @@ final class SensorWindow {
         self.immobilityRunLength = immobilityRunLength
         self.tiltAngle = tiltAngle
         self.postureChangeCount = postureChangeCount
-        self.accelEnvelope = accelEnvelope
+        self.accelEnvelopePacked = accelEnvelope.map { Data(float32s: $0.map { Float32($0) }) }
         self.gyroMean = gyroMean
         self.gravityEnvelope = gravityEnvelope
         self.gravityX = gravityX
@@ -293,23 +297,43 @@ final class SensorWindow {
 extension SensorWindow {
     /// Whether this window still holds the raw streams `RawRetention` drops.
     var hasRawStreams: Bool {
-        accelEnvelope != nil || gyroEnvelope != nil || gravityEnvelope != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
+        accelEnvelope != nil || accelEnvelopePacked != nil || gyroEnvelope != nil || gravityEnvelope != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
     }
 
     func dropRawStreams() {
         accelEnvelope = nil
+        accelEnvelopePacked = nil
         gyroEnvelope = nil
         gravityEnvelope = nil
         audioEnvelope = nil
         audioEnvelopeFiltered = nil
     }
 
+    /// The accel envelope, however this night stored it.
+    var accelSamples: [Double]? {
+        accelEnvelopePacked.map { $0.float32s.map { Double($0) } } ?? accelEnvelope
+    }
+
     /// `gravityEnvelope` unpacked into (x, y, z) samples.
     var gravitySamples: [(x: Double, y: Double, z: Double)] {
         guard let data = gravityEnvelope else { return [] }
-        let floats = data.withUnsafeBytes { Array($0.bindMemory(to: Float32.self)) }
+        let floats = data.float32s
         return stride(from: 0, to: floats.count - 2, by: 3).map {
             (Double(floats[$0]), Double(floats[$0 + 1]), Double(floats[$0 + 2]))
         }
+    }
+}
+
+extension Data {
+    /// Raw Float32 bytes, the compact form for streams: the store archives [Double] at ~2.5× its size.
+    init(float32s: [Float32]) {
+        self = float32s.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    /// Copied out rather than bound in place: bytes read back from the store needn't be aligned.
+    var float32s: [Float32] {
+        var out = [Float32](repeating: 0, count: count / MemoryLayout<Float32>.size)
+        _ = out.withUnsafeMutableBytes { copyBytes(to: $0) }
+        return out
     }
 }

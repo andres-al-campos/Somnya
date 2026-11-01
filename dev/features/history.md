@@ -1,6 +1,6 @@
 # History
 
-Updated 2026-11-01 14:56, at 0.4.
+Updated 2026-11-01 15:26, at 0.4.
 
 Every recorded night, newest first, and a way to get them off the phone for
 analysis.
@@ -22,7 +22,10 @@ analysis.
   synced.
 - **Storage stays bounded**: the 30 most recent nights keep their raw sensor
   streams (the accel, gravity and microphone envelopes, plus the gyro
-  envelope on nights before Nov 2026; ~99% of a night's space). At each
+  envelope on nights before Nov 2026; ~99% of a night's space). A night from
+  Nov 2026 on stores its accel envelope as raw Float32 bytes, 3.9 KB a window
+  against 19 KB before, so a month of raw streams settles near 250 MB as older
+  nights age out (estimated from window sizes, not yet measured on the phone). At each
   launch, older nights drop them and keep their per-window
   numbers and saved results, so every screen still shows them; only
   re-running breathing on them is lost, and heart rate on nights from before

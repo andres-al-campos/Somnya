@@ -284,7 +284,7 @@ final class WindowAggregator {
             for i in axes[0].indices {
                 packed += [Float32(axes[0][i]), Float32(axes[1][i]), Float32(axes[2][i])]
             }
-            gravityEnvelope = packed.withUnsafeBufferPointer { Data(buffer: $0) }
+            gravityEnvelope = Data(float32s: packed)
         }
 
         // Mean gravity vector → posture. Averaging over the window is safe: gravity is ~constant

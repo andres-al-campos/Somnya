@@ -58,7 +58,7 @@ enum SessionJSON {
             "assigned_confidence": w.assignedConfidence,
         ]
         // Dense accel envelope (bed-motion breathing) — omit when absent (e.g. empty window).
-        if let v = w.accelEnvelope { dict["accel_envelope"] = v }
+        if let v = w.accelSamples { dict["accel_envelope"] = v }
         if let v = w.gyroEnvelope { dict["gyro_envelope"] = v }
         if let v = w.gyroMean { dict["gyro_mean"] = v }
         let gravity = w.gravitySamples

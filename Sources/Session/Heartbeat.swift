@@ -57,7 +57,7 @@ enum Heartbeat {
         var times: [Double] = []
         let mins = SleepOnset.minutesFromStart(windows)  // reuse the shared elapsed-minutes mapping
         for (i, w) in windows.enumerated() {
-            guard let env = w.accelEnvelope, !env.isEmpty else { continue }
+            guard let env = w.accelSamples, !env.isEmpty else { continue }
             stream.append(contentsOf: env)
             times.append(contentsOf: Array(repeating: mins[i], count: env.count))
         }
@@ -341,11 +341,11 @@ extension Heartbeat {
                 rows += [Float32(s.kind.rawValue), Float32(s.start), Float32(s.minute), Float32(b), Float32(c)]
             }
         }
-        return rows.withUnsafeBufferPointer { Data(buffer: $0) }
+        return Data(float32s: rows)
     }
 
     static func decode(_ data: Data) -> [Segment] {
-        let f = data.withUnsafeBytes { Array($0.bindMemory(to: Float32.self)) }
+        let f = data.float32s
         var bySegment: [Int: (Segment.Kind, Int, Double, [(Double, Double)])] = [:]
         for i in stride(from: 0, to: f.count - 4, by: 5) {
             guard let kind = Segment.Kind(rawValue: Int(f[i])) else { continue }

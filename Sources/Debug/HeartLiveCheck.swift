@@ -14,14 +14,16 @@ enum HeartLiveCheck {
         var checked = 0, mismatched = 0
         for session in sessions {
             let windows = session.windows.sorted { $0.startTime < $1.startTime }
-            guard windows.contains(where: { ($0.accelEnvelope?.isEmpty == false) }) else { continue }
+            guard windows.contains(where: { $0.accelSamples?.isEmpty == false }) else { continue }
             let whole = Heartbeat.analyze(windows)
 
             var live = HeartbeatLive()
             var stored = Data()
             let mins = SleepOnset.minutesFromStart(windows)
             for (i, w) in windows.enumerated() {
-                stored += Heartbeat.encode(live.append(w.accelEnvelope ?? [], minute: mins[i]))
+                // Through the packed form too, so rounding to Float32 is part of what's compared.
+                let packed = Data(float32s: (w.accelSamples ?? []).map { Float32($0) })
+                stored += Heartbeat.encode(live.append(packed.float32s.map { Double($0) }, minute: mins[i]))
             }
             stored += Heartbeat.encode(live.finish())
             let replayed = Heartbeat.track(Heartbeat.decode(stored))
