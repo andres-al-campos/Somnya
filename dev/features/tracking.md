@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-10-31 20:56, at 0.4.
+Updated 2026-11-01 13:59, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -43,6 +43,11 @@ Open Somnya; the button is on the main screen. Or run the Start Somnya
 Session shortcut.
 
 ## Driving it
+
+After a night that recorded nothing, read the app's log file, which outlives the process:
+`xcrun devicectl device copy from --device <udid> --domain-type appDataContainer
+--domain-identifier com.aurende.somnya --source Library/Caches/somnya.log --destination somnya.log`.
+Crash, CPU and jetsam reports are under `--domain-type systemCrashLogs`.
 
 No check yet. Capture needs the phone's accelerometer and microphone through a
 locked night, which a simulator doesn't have, and there's no test target. A
