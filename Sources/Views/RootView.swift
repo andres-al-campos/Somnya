@@ -44,6 +44,13 @@ struct RootView: View {
 
                 startStopButton
 
+                // Below the button, so the button holds still when this comes and goes.
+                if session.isCleaningOldNights || session.waitingStart != nil {
+                    OldNightCleanupCard(progress: session.cleanupProgress,
+                                        startIsWaiting: session.waitingStart != nil)
+                        .transition(.opacity)
+                }
+
                 if !session.lastGuardrailResults.isEmpty {
                     GuardrailSummary(results: session.lastGuardrailResults)
                 }
@@ -64,6 +71,8 @@ struct RootView: View {
                     .tint(.white)
                 }
             }
+            .animation(.easeOut(duration: 0.2), value: session.isCleaningOldNights)
+            .animation(.easeOut(duration: 0.2), value: session.waitingStart)
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black.opacity(0.94))
@@ -85,7 +94,7 @@ struct RootView: View {
             if imported > 0 { SomnyaLog.lifecycle("Imported \(imported) exported nights") }
             if CommandLine.arguments.contains(HeartLiveCheck.flag) { HeartLiveCheck.run(modelContext) }
             #endif
-            await RawRetention.prune(modelContext.container)
+            await session.cleanUpOldNights()
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didBecomeActiveNotification)) { _ in
@@ -139,8 +148,8 @@ struct RootView: View {
     private func consumePendingStartIfNeeded() {
         if let method = PendingSessionRequest.shared.consumePendingStart(),
            !session.isTracking {
-            session.startSession(method: method)
-            SomnyaLog.lifecycle("Pending start consumed — session started via \(method.rawValue)")
+            session.requestStart(method: method)
+            SomnyaLog.lifecycle("Pending start consumed — start requested via \(method.rawValue)")
         }
     }
 
@@ -159,14 +168,16 @@ struct RootView: View {
         } else {
             Button {
                 SomnyaLog.lifecycle("Start tapped")
-                session.startSession(method: .manual)
+                session.requestStart(method: .manual)
             } label: {
-                Label("Start Tracking", systemImage: "moon.zzz.fill")
+                Label(session.waitingStart == nil ? "Start Tracking" : "Starting After Cleanup",
+                      systemImage: "moon.zzz.fill")
                     .font(.title3.bold())
                     .frame(maxWidth: .infinity, minHeight: 64)
             }
             .buttonStyle(.borderedProminent)
             .tint(.indigo)
+            .disabled(session.waitingStart != nil)
         }
     }
 }
@@ -194,6 +205,39 @@ struct LiveSessionView: View {
     private var elapsed: String {
         let s = Int(now.timeIntervalSince(session.startTime))
         return String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+    }
+}
+
+/// Says old nights are being cleaned up and what that means for starting a session.
+struct OldNightCleanupCard: View {
+    let progress: OldNightProgress?
+    let startIsWaiting: Bool
+
+    var body: some View {
+        HStack(spacing: Theme.gap) {
+            ProgressView()
+                .tint(Theme.text2)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Cleaning up old nights")
+                    Spacer(minLength: 0)
+                    if let progress {
+                        Text("\(progress.night) of \(progress.nights)")
+                            .monospacedDigit()
+                    }
+                }
+                .font(Theme.font(.subheadline, weight: .semibold))
+                .foregroundStyle(Theme.text1)
+                Text(startIsWaiting
+                     ? "Your session will start when this is done."
+                     : "Tap Start to begin when this is done.")
+                    .font(Theme.font(.footnote))
+                    .foregroundStyle(Theme.text2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.cardPadding)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 }
 

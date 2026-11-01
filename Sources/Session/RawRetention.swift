@@ -2,6 +2,12 @@ import Foundation
 import SwiftData
 import SQLite3
 
+/// Which old night cleanup is on, for the main screen.
+struct OldNightProgress: Equatable, Sendable {
+    let night: Int
+    let nights: Int
+}
+
 /// Drops the raw sensor streams from nights older than the last `SomnyaConfig.rawRetentionNights`,
 /// so the store stops growing a night's worth of envelopes forever.
 ///
@@ -11,11 +17,15 @@ import SQLite3
 @ModelActor
 actor RawRetention {
     /// Prunes on a context of its own, off the main thread, and logs the outcome. Run at launch.
-    static func prune(_ container: ModelContainer) async {
+    /// `onWork` fires when there turns out to be something to clean, so most launches show nothing:
+    /// with the night it's on, or nil once it's on the freed space, which isn't counted in nights.
+    static func prune(_ container: ModelContainer, onWork: @escaping @Sendable (OldNightProgress?) -> Void) async {
         do {
             // Created off the main actor: a model actor runs on the thread that created it, and
             // made from a view it pruned on the main thread, leaving the screen black while it worked.
-            let pruned = try await Task.detached { try await RawRetention(modelContainer: container).run() }.value
+            let pruned = try await Task.detached {
+                try await RawRetention(modelContainer: container).run(onWork: onWork)
+            }.value
             if pruned > 0 { SomnyaLog.lifecycle("Dropped raw sensor streams from \(pruned) old nights") }
         } catch {
             SomnyaLog.lifecycle("Pruning raw sensor streams failed; old nights keep them until the next try: \(error)")
@@ -23,20 +33,19 @@ actor RawRetention {
     }
 
     /// Returns how many nights lost their streams.
-    func run() throws -> Int {
+    func run(onWork: @Sendable (OldNightProgress?) -> Void) throws -> Int {
         let sessions = try modelContext.fetch(
             FetchDescriptor<SleepSession>(sortBy: [SortDescriptor(\.startTime, order: .reverse)]))
         // A night being recorded is writing to the store; leave pruning for when the phone is idle.
+        // Once this has begun a Start waits for it (SessionManager.requestStart).
         guard !sessions.contains(where: { $0.endTime == nil }) else { return 0 }
 
         var pruned = 0
-        let open = FetchDescriptor<SleepSession>(predicate: #Predicate { $0.endTime == nil })
-        for session in sessions.dropFirst(SomnyaConfig.rawRetentionNights) {
-            // A backlog takes minutes (each night is a heartbeat analysis), so tracking can start
-            // mid-run: stop between nights rather than compete with capture for the store and CPU.
-            guard try modelContext.fetchCount(open) == 0 else { break }
+        let pending = try sessions.dropFirst(SomnyaConfig.rawRetentionNights).filter(holdsRawStreams)
+        if !pending.isEmpty { SomnyaLog.lifecycle("\(pending.count) old nights to clean up") }
+        for session in pending {
+            onWork(OldNightProgress(night: pruned + 1, nights: pending.count))
             let windows = session.windows.sorted { $0.startTime < $1.startTime }
-            guard windows.contains(where: \.hasRawStreams) else { continue }
 
             if session.analysisCache?.isStale ?? true {
                 if let old = session.analysisCache { modelContext.delete(old) }
@@ -51,19 +60,29 @@ actor RawRetention {
             try modelContext.save()
             pruned += 1
         }
-        try reclaimFreeSpace()
+        reclaimFreeSpace(onWork: onWork)
         return pruned
     }
 
-    /// Pages handed back per step: ~4 MB, a fraction of a second, so a save that has to wait for
-    /// one (starting a night) waits that long and no longer.
+    /// Looks at one window, since a night's streams are dropped all at once. `session.windows` would
+    /// load every old night's streams to count a backlog, and asking the store whether any window
+    /// has a stream was still counting after 37 s, on a question asked at every launch.
+    private func holdsRawStreams(_ session: SleepSession) throws -> Bool {
+        let id = session.persistentModelID
+        var one = FetchDescriptor<SensorWindow>(predicate: #Predicate { $0.session?.persistentModelID == id })
+        one.fetchLimit = 1
+        return try modelContext.fetch(one).first?.hasRawStreams ?? false
+    }
+
+    /// Pages handed back per step: ~4 MB, a fraction of a second, so a main-thread save that has
+    /// to wait for one waits that long and no longer.
     static let reclaimPagesPerStep = 1000
 
     /// Gives the space the dropped streams freed back to the phone. The store reclaims free pages
     /// on its own, but inside whichever save comes next, the main thread's too: with ~600 MB free
     /// that froze launch for 7 s and made Start hang. Doing it here, a step at a time on a
-    /// connection of its own, leaves those saves nothing to do. Stops if a night starts recording.
-    private func reclaimFreeSpace() throws {
+    /// connection of its own, leaves those saves nothing to do.
+    private func reclaimFreeSpace(onWork: @Sendable (OldNightProgress?) -> Void) {
         guard let url = modelContainer.configurations.first?.url else { return }
         var db: OpaquePointer?
         defer { sqlite3_close(db) }
@@ -72,11 +91,10 @@ actor RawRetention {
             return
         }
         sqlite3_busy_timeout(db, 2000)
-        let open = FetchDescriptor<SleepSession>(predicate: #Predicate { $0.endTime == nil })
         let start = freePages(db)
+        if start > 0 { onWork(nil) }
         var free = start
         while free > 0 {
-            guard try modelContext.fetchCount(open) == 0 else { break }
             guard sqlite3_exec(db, "PRAGMA incremental_vacuum(\(Self.reclaimPagesPerStep))", nil, nil, nil) == SQLITE_OK else {
                 SomnyaLog.persist("Giving back freed space stopped: \(String(cString: sqlite3_errmsg(db)))")
                 break
