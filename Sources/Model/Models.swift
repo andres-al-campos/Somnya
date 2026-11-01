@@ -178,12 +178,12 @@ final class SensorWindow {
     /// Smoothed tilt angle (van Hees z-angle), discretized posture, and posture changes.
     var tiltAngle: Double
     var postureChangeCount: Int
-    /// Dense accel-magnitude envelope (~8 Hz, gravity-removed) for this window. Captured so the
+    /// Dense accel-magnitude envelope (`SomnyaConfig.accelEnvelopeHz`, gravity-removed) for this window. Captured so the
     /// breathing estimator can run on BED MOTION offline (ballistocardiography) — a silent,
     /// emission-free alternative to the mic when the phone rests on the mattress. Same "capture
     /// dense, re-slice forever" rationale as the audio envelope.
     var accelEnvelope: [Double]?
-    /// Dense gyro-magnitude envelope (~8 Hz) — rotational micro-motion, for accel+gyro fusion on
+    /// Dense gyro-magnitude envelope (same rate) — rotational micro-motion, for accel+gyro fusion on
     /// heartbeat/BCG offline. Free from the same device-motion callback.
     var gyroEnvelope: [Double]?
     /// Mean gravity vector (g) over the window — sleep POSTURE (back / left / right side). Drift-free.
