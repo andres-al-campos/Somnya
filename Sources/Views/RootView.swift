@@ -75,7 +75,13 @@ struct RootView: View {
             }
         }
         .onAppear { consumePendingStartIfNeeded() }
-        .task { await pruneRawStreams() }
+        .task {
+            #if targetEnvironment(simulator)
+            let imported = RealNightImport.run(into: modelContext)
+            if imported > 0 { SomnyaLog.lifecycle("Imported \(imported) exported nights") }
+            #endif
+            await pruneRawStreams()
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didBecomeActiveNotification)) { _ in
             consumePendingStartIfNeeded()
