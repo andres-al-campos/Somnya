@@ -10,7 +10,7 @@ import SQLite3
 /// the main actor, since a backlog of old nights means a heartbeat analysis each.
 @ModelActor
 actor RawRetention {
-    /// Prunes on a context of its own, off the main thread, and logs the outcome. Run at launch.
+    /// Prunes on a context of its own, off the main thread, and logs the outcome.
     static func prune(_ container: ModelContainer) async {
         do {
             // Created off the main actor: a model actor runs on the thread that created it, and

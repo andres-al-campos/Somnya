@@ -85,7 +85,7 @@ struct RootView: View {
             if imported > 0 { SomnyaLog.lifecycle("Imported \(imported) exported nights") }
             if CommandLine.arguments.contains(HeartLiveCheck.flag) { HeartLiveCheck.run(modelContext) }
             #endif
-            await RawRetention.prune(modelContext.container)
+            await session.cleanUpOldNights()
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didBecomeActiveNotification)) { _ in

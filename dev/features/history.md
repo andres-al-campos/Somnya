@@ -1,6 +1,6 @@
 # History
 
-Updated 2026-11-01 17:13, at 0.4.
+Updated 2026-11-01 17:34, at 0.4.
 
 Every recorded night, newest first, and a way to get them off the phone for
 analysis.
@@ -26,12 +26,12 @@ analysis.
   Nov 2026 on stores its accel envelope as raw Float32 bytes, 3.9 KB a window
   against 19 KB before, so a month of raw streams settles near 250 MB as older
   nights age out (estimated from window sizes, not yet measured on the phone). At each
-  launch, older nights drop them and keep their per-window
+  launch and when a night ends, older nights drop them and keep their per-window
   numbers and saved results, so every screen still shows them; only
   re-running breathing on them is lost, and heart rate on nights from before
   Nov 2026 (later ones keep their small heart segments). Skipped while a night
   is recording, and Start never waits for it: it stops as soon as a night starts,
-  and the next launch carries on. After each night it gives the
+  and the next launch or night's end carries on. After each night it gives the
   freed space back to the phone in ~4 MB steps on a connection of its own.
   Left to the store, that reclaiming happens inside whichever save comes
   next: on a copy of the phone's store with 600 MB free, Start took 4.7 s

@@ -17,6 +17,7 @@ final class SessionManager: ObservableObject {
     @Published var lastFinishedSession: SleepSession?
 
     private let context: ModelContext
+    private var isCleaningUp = false
     private let motion = MotionCapture()
     private let audio = AudioKeepalive()
     private var aggregator: WindowAggregator?
@@ -106,6 +107,15 @@ final class SessionManager: ObservableObject {
             motionActive: motion.isActive && motion.hasDeliveredSample,
             micActive: micGranted && audio.isActive
         )
+    }
+
+    /// Runs when nothing is waiting on the phone: when a night ends, since the app can stay open for
+    /// days without a launch, and at launch, since a run can be cut short by Start or by quitting.
+    func cleanUpOldNights() async {
+        guard !isCleaningUp else { return }
+        isCleaningUp = true
+        await RawRetention.prune(context.container)
+        isCleaningUp = false
     }
 
     @discardableResult
@@ -232,6 +242,7 @@ final class SessionManager: ObservableObject {
         SomnyaLog.lifecycle("Session STOPPED reason=\(reason) duration=\(Int(session.duration))s")
         lastFinishedSession = session  // surfaced so the UI can offer discard if it's too short
         currentSession = nil
+        Task { await cleanUpOldNights() }
     }
 
     /// Discard a just-finished session the user chose not to keep (e.g. a too-short recording).
