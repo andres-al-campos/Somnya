@@ -127,7 +127,10 @@ struct RootView: View {
     /// If an App Intent (gesture/Shortcut) requested a start, honor it now that the app is live.
     private func pruneRawStreams() async {
         do {
-            let pruned = try await RawRetention(modelContainer: modelContext.container).run()
+            // Created off the main actor: a model actor runs on the thread that created it, and
+            // made here it pruned on the main thread, leaving the screen black while it worked.
+            let container = modelContext.container
+            let pruned = try await Task.detached { try await RawRetention(modelContainer: container).run() }.value
             if pruned > 0 { SomnyaLog.lifecycle("Dropped raw sensor streams from \(pruned) old nights") }
         } catch {
             SomnyaLog.lifecycle("Pruning raw sensor streams failed; old nights keep them until the next launch: \(error)")
