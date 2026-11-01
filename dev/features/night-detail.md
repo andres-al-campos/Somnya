@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-10-31 21:42, at 0.4.
+Updated 2026-10-31 22:56, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -21,7 +21,7 @@ trusted.
 
 ## How to get to it
 
-Main screen → History → a night. Raw Data is at the bottom of the detail.
+Main screen → History → a night → In-depth view. Raw Data is at the top of the detail.
 
 ## Driving it
 

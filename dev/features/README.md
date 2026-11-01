@@ -1,6 +1,6 @@
 # Somnya features
 
-Updated 2026-10-26 20:33, at 0.4.
+Updated 2026-10-31 22:56, at 0.4.
 
 What a user can do with Somnya, how to reach it, and how to drive it. Read
 this before adding anything: if it's already here, extend it instead of
@@ -10,6 +10,7 @@ building it again.
 |---|---|---|---|
 | Tracking a night | [tracking.md](tracking.md) | iOS | No check yet |
 | History | [history.md](history.md) | iOS | No check yet |
+| A night | [night.md](night.md) | iOS | No check yet |
 | A night's detail | [night-detail.md](night-detail.md) | iOS | No check yet |
 | Debug tools | [debug-tools.md](debug-tools.md) | iOS | No check yet |
 
