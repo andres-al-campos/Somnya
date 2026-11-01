@@ -232,8 +232,6 @@ final class SessionManager: ObservableObject {
         SomnyaLog.lifecycle("Session STOPPED reason=\(reason) duration=\(Int(session.duration))s")
         lastFinishedSession = session  // surfaced so the UI can offer discard if it's too short
         currentSession = nil
-        let container = context.container
-        Task { await RawRetention.prune(container) }
     }
 
     /// Discard a just-finished session the user chose not to keep (e.g. a too-short recording).

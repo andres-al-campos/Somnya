@@ -158,6 +158,7 @@ struct RootView: View {
             .tint(.red)
         } else {
             Button {
+                SomnyaLog.lifecycle("Start tapped")
                 session.startSession(method: .manual)
             } label: {
                 Label("Start Tracking", systemImage: "moon.zzz.fill")
