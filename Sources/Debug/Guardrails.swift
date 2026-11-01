@@ -55,12 +55,6 @@ enum Guardrails {
             passed: false,
             detail: "Running on the Simulator — motion sensors return no data here. Build and run on a physical iPhone to actually track sleep."
         ))
-        #else
-        results.append(GuardrailResult(
-            name: "Running on real device",
-            passed: true,
-            detail: "Running on a physical device."
-        ))
         #endif
 
         for r in results {
