@@ -1,6 +1,6 @@
 # History
 
-Updated 2026-10-31 21:42, at 0.4.
+Updated 2026-11-01 14:10, at 0.4.
 
 Every recorded night, newest first, and a way to get them off the phone for
 analysis.
@@ -21,11 +21,12 @@ analysis.
   (`scripts/compress-sessions.sh` compresses the Mac's copies) counts as
   synced.
 - **Storage stays bounded**: the 30 most recent nights keep their raw sensor
-  streams (the accel, gyro and microphone envelopes, ~99% of a night's
-  space). At each launch, older nights drop them and keep their per-window
+  streams (the accel, gravity and microphone envelopes, plus the gyro
+  envelope on nights before Nov 2026; ~99% of a night's space). At each
+  launch, older nights drop them and keep their per-window
   numbers and saved results, so every screen still shows them; only
   re-running heart rate or breathing on them is lost. Skipped while a night
-  is recording. The setting is `SomnyaConfig.rawRetentionNights`.
+  is recording, and stops between nights if one starts. The setting is `SomnyaConfig.rawRetentionNights`.
 - Swipe to delete a night.
 
 ## How to get to it

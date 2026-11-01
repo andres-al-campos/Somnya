@@ -149,6 +149,12 @@ enum SomnyaConfig {
     /// `RawRetention` drops them once a night falls out of the last `rawRetentionNights`.
     static let accelEnvelopeHz: Double = 32
 
+    /// Rate (Hz) of the stored gravity vector, for breathing from the way the mattress tilts the
+    /// phone. Breath is 0.2–0.5 Hz, so 5 Hz gives 10–25 samples a breath; each sample averages 10
+    /// raw readings, which cuts sensor noise ~3×. The accel envelope can't carry this: it has
+    /// gravity removed and keeps only the magnitude, so the slow rocking is gone from it.
+    static let gravityEnvelopeHz: Double = 5
+
     /// How many of the most recent nights keep their raw sensor streams (the accel, gyro and mic
     /// envelopes, ~99% of a night's bytes). Older nights keep their per-window numbers and saved
     /// results, so every screen still works; only re-running heart rate or breathing on them is lost.

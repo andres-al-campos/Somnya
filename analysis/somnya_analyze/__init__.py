@@ -38,6 +38,15 @@ HEART_MAX_BPM = 120.0
 SPL_OFFSET_DB = 120.0
 
 
+def gyro_mean(df: pd.DataFrame) -> np.ndarray:
+    """Gyro energy per window: `gyro_mean` on recent files, the mean of `gyro_envelope` on older
+    ones (recorded until Nov 2026), 0 where neither exists."""
+    env = (df["gyro_envelope"].apply(lambda v: float(np.mean(v)) if isinstance(v, list) and v else np.nan)
+           if "gyro_envelope" in df.columns else pd.Series(np.nan, index=df.index))
+    mean = df["gyro_mean"] if "gyro_mean" in df.columns else pd.Series(np.nan, index=df.index)
+    return mean.fillna(env).fillna(0.0).to_numpy(dtype=float)
+
+
 def classify_phone_state(df: pd.DataFrame) -> pd.DataFrame:
     """Label each window 'on_surface' vs in-hand, from signals we already capture. A phone resting
     on a bed has a ROCK-STEADY gravity vector (dGrav≈0 between windows) and near-zero gyro; held in
@@ -50,12 +59,7 @@ def classify_phone_state(df: pd.DataFrame) -> pd.DataFrame:
     g = df[["gravity_x", "gravity_y", "gravity_z"]].to_numpy(dtype=float)
     # Change in gravity vector vs the previous window (0 = perfectly still surface).
     dgrav = np.r_[0.0, np.linalg.norm(np.diff(g, axis=0), axis=1)]
-    # Gyro energy per window (mean of the gyro envelope), if present.
-    if "gyro_envelope" in df.columns:
-        gyro_e = df["gyro_envelope"].apply(
-            lambda v: float(np.mean(v)) if isinstance(v, list) and v else 0.0).to_numpy()
-    else:
-        gyro_e = np.zeros(len(df))
+    gyro_e = gyro_mean(df)
     # Thresholds chosen from real nap data: surface windows sit at dgrav<0.01, gyro<0.01.
     on_surface = (dgrav < 0.015) & (gyro_e < 0.015)
     # Smooth: a single noisy window inside a long still run is still "surface" (debounce).

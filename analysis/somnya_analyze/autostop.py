@@ -29,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from somnya_analyze import gyro_mean
+
 SURFACE_DGRAV = 0.015  # same bars as classify_phone_state
 SURFACE_GYRO = 0.015
 
@@ -36,8 +38,7 @@ SURFACE_GYRO = 0.015
 def off_surface(df: pd.DataFrame) -> np.ndarray:
     g = df[["gravity_x", "gravity_y", "gravity_z"]].to_numpy(dtype=float)
     dgrav = np.r_[0.0, np.linalg.norm(np.diff(g, axis=0), axis=1)]
-    gyro = df["gyro_envelope"].apply(
-        lambda v: float(np.mean(v)) if isinstance(v, list) and v else 0.0).to_numpy()
+    gyro = gyro_mean(df)
     return ~((dgrav < SURFACE_DGRAV) & (gyro < SURFACE_GYRO))
 
 
@@ -68,7 +69,7 @@ def _one(path: str):
     from somnya_analyze import load
     from somnya_analyze.stats import wake_time
     df = load(Path(path))
-    if not {"gravity_x", "gyro_envelope"}.issubset(df.columns):
+    if "gravity_x" not in df.columns or not ({"gyro_envelope", "gyro_mean"} & set(df.columns)):
         return None
     w = wake_time(df[df["on_surface"]])
     row = {"file": Path(path).name, "end_min": float(df["minutes"].iloc[-1]),

@@ -22,6 +22,7 @@ final class WindowAggregator {
     /// the full capture rate to resolve heartbeat timing; the movement features don't.
     private var rawAccelMags: [Double] = []
     private var rawGyroMags: [Double] = []
+    private var rawGravity: [(x: Double, y: Double, z: Double)] = []
 
     /// Running immobility-run length across windows (consecutive low-movement windows).
     private var immobilityRun = 0
@@ -58,9 +59,11 @@ final class WindowAggregator {
     /// Feed one raw 50 Hz accel+gyro magnitude (the dense envelope source). These accumulate into
     /// the current window and are downsampled to the envelope rate at flush. The 10 Hz `ingest`
     /// path still owns window timing/flushing — this only accrues the dense samples in between.
-    func ingestRawMagnitude(accelMag: Double, gyroMag: Double) {
+    func ingestRawMagnitude(accelMag: Double, gyroMag: Double,
+                            gravity: (x: Double, y: Double, z: Double)) {
         rawAccelMags.append(accelMag)
         rawGyroMags.append(gyroMag)
+        rawGravity.append(gravity)
     }
 
     /// Finalize whatever's buffered (called on session stop so the last partial window isn't lost).
@@ -72,18 +75,21 @@ final class WindowAggregator {
 
     private func flush(at start: Date, partial: Bool = false) {
         guard let session, !buffer.isEmpty else {
-            buffer.removeAll(); rawAccelMags.removeAll(); rawGyroMags.removeAll()
+            buffer.removeAll(); rawAccelMags.removeAll(); rawGyroMags.removeAll(); rawGravity.removeAll()
             windowStart = nil; return
         }
         let samples = buffer
         let rawAccel = rawAccelMags
         let rawGyro = rawGyroMags
+        let rawGrav = rawGravity
         buffer.removeAll()
         rawAccelMags.removeAll()
         rawGyroMags.removeAll()
+        rawGravity.removeAll()
         windowStart = nil
 
-        let features = Self.computeFeatures(samples, rawAccelMags: rawAccel, rawGyroMags: rawGyro)
+        let features = Self.computeFeatures(samples, rawAccelMags: rawAccel, rawGyroMags: rawGyro,
+                                            rawGravity: rawGrav)
 
         // Immobility-run context: increment if this window is "still", else reset.
         if features.activityCount < SomnyaConfig.movementThreshold {
@@ -115,7 +121,8 @@ final class WindowAggregator {
             tiltAngle: features.meanTilt,
             postureChangeCount: postureChanges,
             accelEnvelope: features.accelEnvelope.isEmpty ? nil : features.accelEnvelope,
-            gyroEnvelope: features.gyroEnvelope.isEmpty ? nil : features.gyroEnvelope,
+            gyroMean: features.gyroMean,
+            gravityEnvelope: features.gravityEnvelope,
             gravityX: features.gravityX,
             gravityY: features.gravityY,
             gravityZ: features.gravityZ,
@@ -171,9 +178,10 @@ final class WindowAggregator {
         /// Dense accel-magnitude envelope (~accelEnvelopeHz, gravity-removed) for offline
         /// breathing-from-bed-motion analysis. Empty if the window had no usable samples.
         let accelEnvelope: [Double]
-        /// Dense gyro-magnitude envelope (~accelEnvelopeHz) — rotational micro-motion, fused with
-        /// accel for heartbeat/BCG offline. Empty if no usable samples.
-        let gyroEnvelope: [Double]
+        /// Mean gyro magnitude (rad/s), for pickup detection.
+        let gyroMean: Double
+        /// Gravity at gravityEnvelopeHz as Float32 x,y,z triples; nil without raw samples.
+        let gravityEnvelope: Data?
         /// Mean gravity vector over the window (g). Encodes sleep POSTURE: which way "down" points
         /// relative to the device → back / left-side / right-side. Drift-free, unlike integrated tilt.
         let gravityX: Double
@@ -187,10 +195,11 @@ final class WindowAggregator {
     /// (e.g. a legacy caller that only feeds 10 Hz) — then the envelope falls back to the 10 Hz path.
     static func computeFeatures(_ s: [MotionSample],
                                 rawAccelMags: [Double] = [],
-                                rawGyroMags: [Double] = []) -> Features {
+                                rawGyroMags: [Double] = [],
+                                rawGravity: [(x: Double, y: Double, z: Double)] = []) -> Features {
         guard !s.isEmpty else {
             return Features(rms: 0, jerkRMS: 0, activityCount: 0, enmoMean: 0, meanTilt: 0,
-                            accelEnvelope: [], gyroEnvelope: [],
+                            accelEnvelope: [], gyroMean: 0, gravityEnvelope: nil,
                             gravityX: 0, gravityY: 0, gravityZ: 0)
         }
 
@@ -226,22 +235,31 @@ final class WindowAggregator {
         // the 10 Hz `mags` only if no raw samples were fed (legacy/test callers). Detrending is left
         // to the offline estimator (same as the audio path), so we keep raw magnitude here.
         let accelEnvelope: [Double]
-        let gyroEnvelope: [Double]
+        let gyroMags: [Double]
         if !rawAccelMags.isEmpty {
             accelEnvelope = downsample(rawAccelMags,
                                        fromHz: SomnyaConfig.captureHz,
                                        toHz: SomnyaConfig.accelEnvelopeHz)
-            gyroEnvelope = downsample(rawGyroMags,
-                                      fromHz: SomnyaConfig.captureHz,
-                                      toHz: SomnyaConfig.accelEnvelopeHz)
+            gyroMags = rawGyroMags
         } else {
             accelEnvelope = downsample(mags,
                                        fromHz: SomnyaConfig.analysisHz,
                                        toHz: SomnyaConfig.accelEnvelopeHz)
-            let gyroMags = s.map { sqrt($0.rx * $0.rx + $0.ry * $0.ry + $0.rz * $0.rz) }
-            gyroEnvelope = downsample(gyroMags,
-                                      fromHz: SomnyaConfig.analysisHz,
-                                      toHz: SomnyaConfig.accelEnvelopeHz)
+            gyroMags = s.map { sqrt($0.rx * $0.rx + $0.ry * $0.ry + $0.rz * $0.rz) }
+        }
+        let gyroMean = gyroMags.isEmpty ? 0 : gyroMags.reduce(0, +) / Double(gyroMags.count)
+
+        var gravityEnvelope: Data?
+        if !rawGravity.isEmpty {
+            let axes = [rawGravity.map(\.x), rawGravity.map(\.y), rawGravity.map(\.z)].map {
+                downsample($0, fromHz: SomnyaConfig.captureHz, toHz: SomnyaConfig.gravityEnvelopeHz)
+            }
+            var packed: [Float32] = []
+            packed.reserveCapacity(axes[0].count * 3)
+            for i in axes[0].indices {
+                packed += [Float32(axes[0][i]), Float32(axes[1][i]), Float32(axes[2][i])]
+            }
+            gravityEnvelope = packed.withUnsafeBufferPointer { Data(buffer: $0) }
         }
 
         // Mean gravity vector → posture. Averaging over the window is safe: gravity is ~constant
@@ -252,7 +270,7 @@ final class WindowAggregator {
 
         return Features(rms: rms, jerkRMS: jerkRMS, activityCount: activityCount,
                         enmoMean: enmoMean, meanTilt: meanTilt, accelEnvelope: accelEnvelope,
-                        gyroEnvelope: gyroEnvelope,
+                        gyroMean: gyroMean, gravityEnvelope: gravityEnvelope,
                         gravityX: gravityX, gravityY: gravityY, gravityZ: gravityZ)
     }
 

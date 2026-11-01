@@ -183,9 +183,16 @@ final class SensorWindow {
     /// emission-free alternative to the mic when the phone rests on the mattress. Same "capture
     /// dense, re-slice forever" rationale as the audio envelope.
     var accelEnvelope: [Double]?
-    /// Dense gyro-magnitude envelope (same rate) — rotational micro-motion, for accel+gyro fusion on
-    /// heartbeat/BCG offline. Free from the same device-motion callback.
+    /// Dense gyro-magnitude envelope, recorded until Nov 2026. Fusing it with accel for heart rate
+    /// was tested on five nights and made the track worse, so new windows keep only `gyroMean`.
     var gyroEnvelope: [Double]?
+    /// Mean gyro magnitude over the window (rad/s): how busy the phone was turning. Pickup
+    /// detection reads it to tell a phone in the hand from one on the bed.
+    var gyroMean: Double?
+    /// Gravity vector at `SomnyaConfig.gravityEnvelopeHz`, as Float32 x,y,z triples: the phone's
+    /// tilt through the window, for breathing from mattress motion. Raw bytes rather than [Double],
+    /// which the store archives at ~2.5× the size.
+    var gravityEnvelope: Data?
     /// Mean gravity vector (g) over the window — sleep POSTURE (back / left / right side). Drift-free.
     var gravityX: Double?
     var gravityY: Double?
@@ -234,7 +241,8 @@ final class SensorWindow {
          tiltAngle: Double,
          postureChangeCount: Int,
          accelEnvelope: [Double]? = nil,
-         gyroEnvelope: [Double]? = nil,
+         gyroMean: Double? = nil,
+         gravityEnvelope: Data? = nil,
          gravityX: Double? = nil,
          gravityY: Double? = nil,
          gravityZ: Double? = nil,
@@ -258,7 +266,8 @@ final class SensorWindow {
         self.tiltAngle = tiltAngle
         self.postureChangeCount = postureChangeCount
         self.accelEnvelope = accelEnvelope
-        self.gyroEnvelope = gyroEnvelope
+        self.gyroMean = gyroMean
+        self.gravityEnvelope = gravityEnvelope
         self.gravityX = gravityX
         self.gravityY = gravityY
         self.gravityZ = gravityZ
@@ -280,13 +289,23 @@ final class SensorWindow {
 extension SensorWindow {
     /// Whether this window still holds the raw streams `RawRetention` drops.
     var hasRawStreams: Bool {
-        accelEnvelope != nil || gyroEnvelope != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
+        accelEnvelope != nil || gyroEnvelope != nil || gravityEnvelope != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
     }
 
     func dropRawStreams() {
         accelEnvelope = nil
         gyroEnvelope = nil
+        gravityEnvelope = nil
         audioEnvelope = nil
         audioEnvelopeFiltered = nil
+    }
+
+    /// `gravityEnvelope` unpacked into (x, y, z) samples.
+    var gravitySamples: [(x: Double, y: Double, z: Double)] {
+        guard let data = gravityEnvelope else { return [] }
+        let floats = data.withUnsafeBytes { Array($0.bindMemory(to: Float32.self)) }
+        return stride(from: 0, to: floats.count - 2, by: 3).map {
+            (Double(floats[$0]), Double(floats[$0 + 1]), Double(floats[$0 + 2]))
+        }
     }
 }

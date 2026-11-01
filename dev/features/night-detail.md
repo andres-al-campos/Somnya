@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-10-31 22:56, at 0.4.
+Updated 2026-11-01 14:10, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -48,10 +48,14 @@ By hand only: open a recorded night.
   windows at scattered rates (median 87, spread 36), with no heart rate in
   its stats, while the nights of 29–31 Oct found one in 13–18% at a steady
   53/min (spread about 6).
-- Breathing from motion hasn't been tested fairly: the stored accel and gyro
-  envelopes are magnitudes with gravity removed, and a breath tilts the
-  phone, which iOS counts as a change in gravity. Gravity is kept once per
-  window, too coarse for a breath.
+- Breathing from motion hasn't been tested fairly yet. A breath tilts the
+  phone, which iOS counts as a change in gravity, and the accel and gyro
+  envelopes are magnitudes with gravity removed. Since Nov 2026 gravity is
+  stored at 5 Hz (`gravity_envelope` in exports); the test is a night plus
+  an empty-bed control, looking for a 0.2–0.5 Hz rhythm. The old gyro
+  envelope showed 0.19–0.25 rhythm strength on nights against 0.16 on the
+  empty bed, and fusing it with accel made heart rate worse on 5 nights, so
+  it's no longer recorded densely.
 
 - Somnya doesn't show sleep stages or a sleep score: lying awake and still
   looks the same as deep sleep to an accelerometer. `analysis/STATS_SPEC.md`

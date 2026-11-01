@@ -32,7 +32,8 @@ struct PickupDetector {
             dGravity = sqrt((gx - px) * (gx - px) + (gy - py) * (gy - py) + (gz - pz) * (gz - pz))
         }
         lastGravity = (gx, gy, gz)
-        let gyro = w.gyroEnvelope.flatMap { $0.isEmpty ? nil : $0.reduce(0, +) / Double($0.count) } ?? 0
+        let gyro = w.gyroMean
+            ?? w.gyroEnvelope.flatMap { $0.isEmpty ? nil : $0.reduce(0, +) / Double($0.count) } ?? 0
         let off = !(dGravity < Self.gravityBar && gyro < Self.gyroBar)
 
         guard off else {

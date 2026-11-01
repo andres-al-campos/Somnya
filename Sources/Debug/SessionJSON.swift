@@ -33,6 +33,7 @@ enum SessionJSON {
                 "band_pass_low_hz": SomnyaConfig.breathingBandLowHz,
                 "band_pass_high_hz": SomnyaConfig.breathingBandHighHz,
                 "accel_envelope_hz": SomnyaConfig.accelEnvelopeHz,
+                "gravity_envelope_hz": SomnyaConfig.gravityEnvelopeHz,
             ],
             "windows": windows.map { windowDict($0, iso: iso) },
         ]
@@ -59,6 +60,9 @@ enum SessionJSON {
         // Dense accel envelope (bed-motion breathing) — omit when absent (e.g. empty window).
         if let v = w.accelEnvelope { dict["accel_envelope"] = v }
         if let v = w.gyroEnvelope { dict["gyro_envelope"] = v }
+        if let v = w.gyroMean { dict["gyro_mean"] = v }
+        let gravity = w.gravitySamples
+        if !gravity.isEmpty { dict["gravity_envelope"] = gravity.map { [$0.x, $0.y, $0.z] } }
         // Posture (mean gravity vector) + ambient pressure.
         if let v = w.gravityX { dict["gravity_x"] = v }
         if let v = w.gravityY { dict["gravity_y"] = v }

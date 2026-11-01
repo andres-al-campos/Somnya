@@ -169,10 +169,10 @@ final class SessionManager: ObservableObject {
         }
         // Dense 50 Hz magnitude stream → the BCG/breathing envelope. Hop to main for the same
         // SwiftData-actor reasons; this only appends to in-memory buffers (cheap at 50 Hz).
-        motion.onRawMagnitude = { [weak self] _, accelMag, gyroMag in
+        motion.onRawMagnitude = { [weak self] _, accelMag, gyroMag, gravity in
             Task { @MainActor in
                 guard let self, self.currentSession != nil else { return }
-                agg.ingestRawMagnitude(accelMag: accelMag, gyroMag: gyroMag)
+                agg.ingestRawMagnitude(accelMag: accelMag, gyroMag: gyroMag, gravity: gravity)
             }
         }
         // Start the audio keepalive so the app survives the screen locking. Only attempt it
