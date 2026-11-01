@@ -100,7 +100,7 @@ def phone_state_summary(df: pd.DataFrame) -> str:
 def load(path: Path) -> pd.DataFrame:
     """Load a session as a per-window DataFrame. Accepts the new single JSON export (preferred —
     carries envelope, filtered_envelope, mel_bands, and config inline) or the legacy feature CSV."""
-    if path.suffix.lower() == ".json":
+    if path.name.lower().endswith((".json", ".json.gz")):
         df = _load_json(path)
     else:
         df = pd.read_csv(path, parse_dates=["start_time_iso"])
@@ -119,8 +119,10 @@ def load(path: Path) -> pd.DataFrame:
 
 
 def _load_json(path: Path) -> pd.DataFrame:
+    import gzip
     import json
-    with open(path) as f:
+    # The Mac keeps older nights compressed (scripts/compress-sessions.sh).
+    with (gzip.open(path, "rt") if path.suffix.lower() == ".gz" else open(path)) as f:
         doc = json.load(f)
     df = pd.json_normalize(doc["windows"])
     # Stash config + session meta on the frame for the sweeps (as attrs so they survive).

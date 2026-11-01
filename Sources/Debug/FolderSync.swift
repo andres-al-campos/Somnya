@@ -58,7 +58,12 @@ enum FolderSync {
         } catch {
             throw SyncError.unreachable
         }
-        let missing = sessions.filter { !present.contains(SessionJSON.fileName(for: $0)) }
+        // The Mac compresses its archive (scripts/compress-sessions.sh), so a night there as
+        // .json.gz is already synced; copying it again would bring back a night stripped of its raw streams.
+        let missing = sessions.filter {
+            let name = SessionJSON.fileName(for: $0)
+            return !present.contains(name) && !present.contains(name + ".gz")
+        }
 
         for (i, session) in missing.enumerated() {
             progress(i + 1, missing.count)

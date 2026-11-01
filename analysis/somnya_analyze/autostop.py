@@ -79,7 +79,7 @@ def _one(path: str):
 
 
 def sweep(folder: Path) -> pd.DataFrame:
-    files = sorted(str(p) for p in folder.glob("somnya-session-*.json"))
+    files = sorted(str(p) for p in [*folder.glob("somnya-session-*.json"), *folder.glob("somnya-session-*.json.gz")])
     with ProcessPoolExecutor(max_workers=6) as ex:
         rows = [r for r in ex.map(_one, files) if r]
     return pd.DataFrame(rows)
