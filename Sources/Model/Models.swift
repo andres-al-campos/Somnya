@@ -276,3 +276,17 @@ final class SensorWindow {
         self.assignedConfidence = 0
     }
 }
+
+extension SensorWindow {
+    /// Whether this window still holds the raw streams `RawRetention` drops.
+    var hasRawStreams: Bool {
+        accelEnvelope != nil || gyroEnvelope != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
+    }
+
+    func dropRawStreams() {
+        accelEnvelope = nil
+        gyroEnvelope = nil
+        audioEnvelope = nil
+        audioEnvelopeFiltered = nil
+    }
+}

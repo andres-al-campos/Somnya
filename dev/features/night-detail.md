@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-10-31 21:02, at 0.4.
+Updated 2026-10-31 21:42, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -31,6 +31,11 @@ Python prototype in `analysis/` and `analysis/STATS_SPEC.md`.
 By hand only: open a recorded night.
 
 ## Gotchas
+
+- A night older than the last 30 has no raw streams, so its heart rate is
+  the track saved when it was last analysed: a heart-rate algorithm change
+  doesn't reach it, while fell-asleep, which reads only per-window numbers,
+  still recomputes.
 
 - Breathing confidence doesn't show a person is there. On 31 Oct the phone
   lay alone on the empty bed for 44 min (dogs and neighbours audible): mean

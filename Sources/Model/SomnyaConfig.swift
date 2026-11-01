@@ -145,9 +145,14 @@ enum SomnyaConfig {
     /// Breathing (0.5 Hz) is still wildly oversampled, so the breathing path is unaffected.
     ///
     /// COST: ~4x this stream's bytes (it's ~32% of the export, so the file grows toward ~20 MB/night).
-    /// Accepted deliberately: "capture dense" while validating. The raw envelopes are TRANSIENT —
-    /// the plan is to prune them after analysis + charts, archiving only the derived insights
-    /// (heart/breathing rate, confidence, stats) which are ~25x smaller (<1 MB/night). Pruning is
-    /// deferred until the SwiftUI app that owns the archive format exists.
+    /// Accepted deliberately: "capture dense" while validating. The raw envelopes are TRANSIENT:
+    /// `RawRetention` drops them once a night falls out of the last `rawRetentionNights`.
     static let accelEnvelopeHz: Double = 32
+
+    /// How many of the most recent nights keep their raw sensor streams (the accel, gyro and mic
+    /// envelopes, ~99% of a night's bytes). Older nights keep their per-window numbers and saved
+    /// results, so every screen still works; only re-running heart rate or breathing on them is lost.
+    /// A month leaves room to fix a bug and re-run recent nights, and caps the store at a few hundred
+    /// MB instead of growing ~11 MB a night forever (owner, 31 Oct 2026).
+    static let rawRetentionNights = 30
 }

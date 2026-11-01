@@ -115,7 +115,11 @@ struct SessionDetailView: View {
             await Task.yield()
             let snapshot = windows
             let onset = SleepOnset.analyze(snapshot)
-            let heartbeat = Heartbeat.analyze(snapshot)
+            // A night past the retention window has no raw streams to recompute heart rate from, so
+            // it keeps the track it was last analysed with rather than losing its chart.
+            let heartbeat = snapshot.contains(where: \.hasRawStreams) || session.analysisCache == nil
+                ? Heartbeat.analyze(snapshot)
+                : session.analysisCache!.heartbeat
             analysis = Analysis(onset: onset, heartbeat: heartbeat)
 
             // 3. Persist for instant reopens — but only for FINISHED sessions. An active session will

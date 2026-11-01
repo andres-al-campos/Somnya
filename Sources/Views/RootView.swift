@@ -6,6 +6,7 @@ import SwiftData
 /// timer, guardrail warnings, and a route into the debug screen — enough to drive sessions
 /// by hand on-device while the capture pipeline is built out.
 struct RootView: View {
+    @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var session: SessionManager
     @StateObject private var mic = MicPermission()
     @Query(sort: \SleepSession.startTime, order: .reverse) private var sessions: [SleepSession]
@@ -74,6 +75,7 @@ struct RootView: View {
             }
         }
         .onAppear { consumePendingStartIfNeeded() }
+        .task { await pruneRawStreams() }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didBecomeActiveNotification)) { _ in
             consumePendingStartIfNeeded()
@@ -123,6 +125,15 @@ struct RootView: View {
     }
 
     /// If an App Intent (gesture/Shortcut) requested a start, honor it now that the app is live.
+    private func pruneRawStreams() async {
+        do {
+            let pruned = try await RawRetention(modelContainer: modelContext.container).run()
+            if pruned > 0 { SomnyaLog.lifecycle("Dropped raw sensor streams from \(pruned) old nights") }
+        } catch {
+            SomnyaLog.lifecycle("Pruning raw sensor streams failed; old nights keep them until the next launch: \(error)")
+        }
+    }
+
     private func consumePendingStartIfNeeded() {
         if let method = PendingSessionRequest.shared.consumePendingStart(),
            !session.isTracking {
