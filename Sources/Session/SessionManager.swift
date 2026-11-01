@@ -25,6 +25,7 @@ final class SessionManager: ObservableObject {
 
     init(context: ModelContext) {
         self.context = context
+        SomnyaLog.lifecycle("SessionManager created")
         recoverOrphanedSessions()
         observeStopSignal()
         NotificationCenter.default.addObserver(

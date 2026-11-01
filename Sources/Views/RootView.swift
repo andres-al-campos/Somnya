@@ -8,6 +8,7 @@ import SwiftData
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var session: SessionManager
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var mic = MicPermission()
     @Query(sort: \SleepSession.startTime, order: .reverse) private var sessions: [SleepSession]
 
@@ -75,6 +76,9 @@ struct RootView: View {
             }
         }
         .onAppear { consumePendingStartIfNeeded() }
+        .onChange(of: scenePhase) { _, phase in
+            SomnyaLog.lifecycle("App \(phase), tracking=\(session.isTracking)")
+        }
         .task {
             #if targetEnvironment(simulator)
             let imported = RealNightImport.run(into: modelContext)
