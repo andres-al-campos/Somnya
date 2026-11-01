@@ -15,14 +15,8 @@ final class SessionManager: ObservableObject {
     /// The session just finished by stopSession(), held briefly so the UI can offer save/discard on a
     /// too-short recording. Cleared once the user decides (keep) or it's deleted (discard).
     @Published var lastFinishedSession: SleepSession?
-    /// Launch cleanup found old nights to clean, so the screen says so.
-    @Published private(set) var isCleaningOldNights = false
-    @Published private(set) var cleanupProgress: OldNightProgress?
-    /// A start asked for during cleanup, which begins when cleanup ends.
-    @Published private(set) var waitingStart: DetectionMethod?
 
     private let context: ModelContext
-    private var cleanupRunning = false
     private let motion = MotionCapture()
     private let audio = AudioKeepalive()
     private var aggregator: WindowAggregator?
@@ -114,38 +108,8 @@ final class SessionManager: ObservableObject {
         )
     }
 
-    /// Drops old nights' raw streams and frees their space. Starts asked for meanwhile wait for
-    /// it, because cleanup and capture would otherwise compete for the store and the CPU.
-    func cleanUpOldNights() async {
-        cleanupRunning = true
-        await RawRetention.prune(context.container) { [weak self] progress in
-            Task { @MainActor in
-                guard let self, self.cleanupRunning else { return }
-                self.isCleaningOldNights = true
-                self.cleanupProgress = progress
-            }
-        }
-        cleanupRunning = false
-        isCleaningOldNights = false
-        cleanupProgress = nil
-        if let method = waitingStart {
-            waitingStart = nil
-            startSession(method: method)
-        }
-    }
-
-    /// Starts tracking now, or as soon as cleanup is done.
-    func requestStart(method: DetectionMethod) {
-        if cleanupRunning {
-            waitingStart = method
-            SomnyaLog.lifecycle("Start waiting for old-night cleanup, method=\(method.rawValue)")
-        } else {
-            startSession(method: method)
-        }
-    }
-
     @discardableResult
-    private func startSession(method: DetectionMethod) -> SleepSession {
+    func startSession(method: DetectionMethod) -> SleepSession {
         // If a session is already active, don't silently stack a second one.
         if let existing = currentSession {
             if closeIfCaptureStopped() {

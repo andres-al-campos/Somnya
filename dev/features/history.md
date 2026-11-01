@@ -1,6 +1,6 @@
 # History
 
-Updated 2026-11-01 16:42, at 0.4.
+Updated 2026-11-01 17:13, at 0.4.
 
 Every recorded night, newest first, and a way to get them off the phone for
 analysis.
@@ -30,13 +30,13 @@ analysis.
   numbers and saved results, so every screen still shows them; only
   re-running breathing on them is lost, and heart rate on nights from before
   Nov 2026 (later ones keep their small heart segments). Skipped while a night
-  is recording. While it works the main screen says so under Start, and a Start
-  tapped then begins when it's done. A new install has one night to clean at a
-  launch; a backlog only comes from a build that kept raw data longer. Then it
-  gives the freed space back to the phone in ~4 MB steps on a connection of its own.
+  is recording, and Start never waits for it: it stops as soon as a night starts,
+  and the next launch carries on. After each night it gives the
+  freed space back to the phone in ~4 MB steps on a connection of its own.
   Left to the store, that reclaiming happens inside whichever save comes
   next: on a copy of the phone's store with 600 MB free, Start took 4.7 s
-  and launch froze 7 s; after the background reclaim, Start took 88 ms. The setting is `SomnyaConfig.rawRetentionNights`.
+  and launch froze 7 s; after the background reclaim, Start took 88 ms, and
+  1.2 s tapped mid-cleanup of a night with 500 MB to give back. The setting is `SomnyaConfig.rawRetentionNights`.
 - Swipe to delete a night.
 
 ## How to get to it
