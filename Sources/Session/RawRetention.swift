@@ -17,7 +17,11 @@ actor RawRetention {
         guard !sessions.contains(where: { $0.endTime == nil }) else { return 0 }
 
         var pruned = 0
+        let open = FetchDescriptor<SleepSession>(predicate: #Predicate { $0.endTime == nil })
         for session in sessions.dropFirst(SomnyaConfig.rawRetentionNights) {
+            // A backlog takes minutes (each night is a heartbeat analysis), so tracking can start
+            // mid-run: stop between nights rather than compete with capture for the store and CPU.
+            guard try modelContext.fetchCount(open) == 0 else { break }
             let windows = session.windows.sorted { $0.startTime < $1.startTime }
             guard windows.contains(where: \.hasRawStreams) else { continue }
 
