@@ -83,8 +83,9 @@ struct RootView: View {
             #if targetEnvironment(simulator)
             let imported = RealNightImport.run(into: modelContext)
             if imported > 0 { SomnyaLog.lifecycle("Imported \(imported) exported nights") }
+            if CommandLine.arguments.contains(HeartLiveCheck.flag) { HeartLiveCheck.run(modelContext) }
             #endif
-            await pruneRawStreams()
+            await RawRetention.prune(modelContext.container)
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didBecomeActiveNotification)) { _ in
@@ -135,18 +136,6 @@ struct RootView: View {
     }
 
     /// If an App Intent (gesture/Shortcut) requested a start, honor it now that the app is live.
-    private func pruneRawStreams() async {
-        do {
-            // Created off the main actor: a model actor runs on the thread that created it, and
-            // made here it pruned on the main thread, leaving the screen black while it worked.
-            let container = modelContext.container
-            let pruned = try await Task.detached { try await RawRetention(modelContainer: container).run() }.value
-            if pruned > 0 { SomnyaLog.lifecycle("Dropped raw sensor streams from \(pruned) old nights") }
-        } catch {
-            SomnyaLog.lifecycle("Pruning raw sensor streams failed; old nights keep them until the next launch: \(error)")
-        }
-    }
-
     private func consumePendingStartIfNeeded() {
         if let method = PendingSessionRequest.shared.consumePendingStart(),
            !session.isTracking {

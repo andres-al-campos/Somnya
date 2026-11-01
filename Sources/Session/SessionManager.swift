@@ -46,6 +46,7 @@ final class SessionManager: ObservableObject {
         guard now.timeIntervalSince(lastWindow) > SomnyaConfig.captureStoppedSeconds else { return false }
         // Drop the partial window instead of flushing it: it holds only what arrived after the
         // app woke, which would land hours past the real end.
+        aggregator?.closeHeartbeat()
         aggregator = nil
         finish(session, endTime: lastWindow.addingTimeInterval(SomnyaConfig.windowSeconds),
                endReason: .recovered,
@@ -151,6 +152,7 @@ final class SessionManager: ObservableObject {
             // Defer: this runs inside the aggregator's flush, which stopping would tear down.
             Task { @MainActor in
                 guard self.currentSession === session else { return }
+                self.aggregator?.closeHeartbeat()
                 self.aggregator = nil
                 self.finish(session, endTime: pickedUp, endReason: .pickup,
                             reason: "phone picked up after sleep")
@@ -230,6 +232,8 @@ final class SessionManager: ObservableObject {
         SomnyaLog.lifecycle("Session STOPPED reason=\(reason) duration=\(Int(session.duration))s")
         lastFinishedSession = session  // surfaced so the UI can offer discard if it's too short
         currentSession = nil
+        let container = context.container
+        Task { await RawRetention.prune(container) }
     }
 
     /// Discard a just-finished session the user chose not to keep (e.g. a too-short recording).

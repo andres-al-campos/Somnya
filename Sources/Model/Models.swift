@@ -193,6 +193,10 @@ final class SensorWindow {
     /// tilt through the window, for breathing from mattress motion. Raw bytes rather than [Double],
     /// which the store archives at ~2.5× the size.
     var gravityEnvelope: Data?
+    /// Heart-band segments made while recording (`Heartbeat.encode`), so the night's heart rate is
+    /// one cheap pass at stop. Not a raw stream: a few hundred bytes, kept after pruning, and enough
+    /// to recompute the track forever. nil on nights recorded before Nov 2026.
+    var heartSegments: Data?
     /// Mean gravity vector (g) over the window — sleep POSTURE (back / left / right side). Drift-free.
     var gravityX: Double?
     var gravityY: Double?

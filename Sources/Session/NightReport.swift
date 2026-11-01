@@ -56,8 +56,8 @@ actor NightReporter {
         let fresh = session.analysisCache.flatMap { $0.isStale ? nil : $0 }
         let onset = fresh?.onset ?? SleepOnset.analyze(windows)
         var heart = fresh?.heartbeat
-        if heart == nil, computeHeart, windows.contains(where: \.hasRawStreams) {
-            let track = Heartbeat.analyze(windows)
+        if heart == nil, computeHeart, windows.contains(where: { $0.hasRawStreams || $0.heartSegments != nil }) {
+            let track = Heartbeat.track(of: windows)
             heart = track
             if session.endTime != nil {
                 if let old = session.analysisCache { modelContext.delete(old) }

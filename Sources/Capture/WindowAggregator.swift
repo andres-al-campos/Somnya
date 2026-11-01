@@ -24,6 +24,12 @@ final class WindowAggregator {
     private var rawGyroMags: [Double] = []
     private var rawGravity: [(x: Double, y: Double, z: Double)] = []
 
+    /// Heart segments made block by block as windows land; see `HeartbeatLive`.
+    private var heart = HeartbeatLive()
+    /// Start of the first saved window: window minutes count from it, as `SleepOnset.minutesFromStart` does.
+    private var firstWindowStart: Date?
+    private var lastWindow: SensorWindow?
+
     /// Running immobility-run length across windows (consecutive low-movement windows).
     private var immobilityRun = 0
     /// Previous window's mean tilt, to count posture changes.
@@ -70,6 +76,20 @@ final class WindowAggregator {
     func finalize() {
         if let start = windowStart, !buffer.isEmpty {
             flush(at: start, partial: true)
+        }
+        closeHeartbeat()
+    }
+
+    /// Make the last heart segments from the envelope still waiting for its padding and save them
+    /// on the last window. Called when the night ends, whether or not the partial window is kept.
+    func closeHeartbeat() {
+        let segments = heart.finish()
+        guard let window = lastWindow, !segments.isEmpty else { return }
+        window.heartSegments = (window.heartSegments ?? Data()) + Heartbeat.encode(segments)
+        do {
+            try context.save()
+        } catch {
+            SomnyaLog.persist("FAILED to save the last heart segments: \(error)")
         }
     }
 
@@ -138,6 +158,11 @@ final class WindowAggregator {
             melBandEnergies: audio?.melBands
         )
         window.session = session
+        let first = firstWindowStart ?? start
+        firstWindowStart = first
+        window.heartSegments = Heartbeat.encode(
+            heart.append(features.accelEnvelope, minute: start.timeIntervalSince(first) / 60))
+        lastWindow = window
         context.insert(window)
 
         // Always surface the audio diagnostic — on success the rate+conf, on nil the REASON +

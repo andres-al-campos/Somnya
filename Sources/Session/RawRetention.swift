@@ -9,6 +9,19 @@ import SwiftData
 /// the main actor, since a backlog of old nights means a heartbeat analysis each.
 @ModelActor
 actor RawRetention {
+    /// Prunes on a context of its own, off the main thread, and logs the outcome. Run at launch and
+    /// after each recording ends, so the store never holds more than one night over the limit.
+    static func prune(_ container: ModelContainer) async {
+        do {
+            // Created off the main actor: a model actor runs on the thread that created it, and
+            // made from a view it pruned on the main thread, leaving the screen black while it worked.
+            let pruned = try await Task.detached { try await RawRetention(modelContainer: container).run() }.value
+            if pruned > 0 { SomnyaLog.lifecycle("Dropped raw sensor streams from \(pruned) old nights") }
+        } catch {
+            SomnyaLog.lifecycle("Pruning raw sensor streams failed; old nights keep them until the next try: \(error)")
+        }
+    }
+
     /// Returns how many nights lost their streams.
     func run() throws -> Int {
         let sessions = try modelContext.fetch(
@@ -28,7 +41,7 @@ actor RawRetention {
             if session.analysisCache?.isStale ?? true {
                 if let old = session.analysisCache { modelContext.delete(old) }
                 let cache = SessionAnalysisCache.from(
-                    heartbeat: Heartbeat.analyze(windows), onset: SleepOnset.analyze(windows))
+                    heartbeat: Heartbeat.track(of: windows), onset: SleepOnset.analyze(windows))
                 cache.session = session
                 session.analysisCache = cache
                 modelContext.insert(cache)

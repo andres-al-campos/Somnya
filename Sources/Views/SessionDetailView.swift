@@ -117,8 +117,9 @@ struct SessionDetailView: View {
             let onset = SleepOnset.analyze(snapshot)
             // A night past the retention window has no raw streams to recompute heart rate from, so
             // it keeps the track it was last analysed with rather than losing its chart.
-            let heartbeat = snapshot.contains(where: \.hasRawStreams) || session.analysisCache == nil
-                ? Heartbeat.analyze(snapshot)
+            let heartbeat = snapshot.contains(where: { $0.hasRawStreams || $0.heartSegments != nil })
+                || session.analysisCache == nil
+                ? Heartbeat.track(of: snapshot)
                 : session.analysisCache!.heartbeat
             analysis = Analysis(onset: onset, heartbeat: heartbeat)
 

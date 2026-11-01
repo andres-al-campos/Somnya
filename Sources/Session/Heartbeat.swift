@@ -64,14 +64,58 @@ enum Heartbeat {
         guard !stream.isEmpty else { return Track(points: []) }
 
         let band = bandpassBPM(stream, hz: hz, lowBPM: minBPM, highBPM: maxBPM)
+        return track(segments(band, times: times, hz: hz))
+    }
+
+    /// The night's track from whatever it has: the segments worked out during the night when it has
+    /// them (recorded since Nov 2026, and kept after the raw streams are pruned), else the raw envelope.
+    static func track(of windows: [SensorWindow]) -> Track {
+        let stored = windows.compactMap(\.heartSegments)
+        guard !stored.isEmpty else { return analyze(windows) }
+        return track(stored.flatMap(decode))
+    }
+
+    // MARK: - Segments: the heavy half, done per block
+
+    /// One stretch of the heart band — a long anchor window or a short infill window — with its
+    /// autocorrelation peaks (bpm, corr), strongest first. Everything costly happens making these;
+    /// turning them into a track is cheap, so a night can make them as it goes.
+    struct Segment {
+        enum Kind: Int { case anchor = 0, infill = 1 }
+        let kind: Kind
+        /// Whole-night index of its first envelope sample: tells apart the two infill windows that
+        /// share a 30 s window's minute, and orders segments as a whole-night run would.
+        let start: Int
+        let minute: Double
+        let peaks: [(Double, Double)]
+    }
+
+    /// Anchor and infill segments for every full window in `band`. `from` is the whole-night index of
+    /// `band[0]`, which must sit on an anchor boundary so blocks made during the night line up with a
+    /// whole-night run.
+    static func segments(_ band: [Double], times: [Double], hz: Double, from: Int = 0) -> [Segment] {
+        var out: [Segment] = []
+        for (kind, winS) in [(Segment.Kind.anchor, anchorWindowS), (.infill, infillWindowS)] {
+            let n = Int(winS * hz)
+            guard n >= 4 else { continue }
+            var start = 0
+            while start + n <= band.count {
+                out.append(Segment(kind: kind, start: from + start, minute: times[start + n / 2],
+                                   peaks: allPeaks(Array(band[start..<start + n]), hz: hz)))
+                start += n
+            }
+        }
+        return out
+    }
+
+    /// The cheap half: seed, slew-tracked anchor and gated infill, from precomputed segments.
+    static func track(_ segments: [Segment]) -> Track {
+        let anchors = segments.filter { $0.kind == .anchor }.sorted { $0.start < $1.start }
+        let infills = segments.filter { $0.kind == .infill }.sorted { $0.start < $1.start }
 
         // PASS 1 — anchor, seeded from the night-wide median fundamental.
-        // The seed and the track walk the IDENTICAL 120s windows and both need each window's
-        // autocorrelation peaks — the most expensive op (O(samples·lags)). Compute the per-window
-        // peaks ONCE here and share them, instead of autocorrelating every anchor window twice.
-        let anchorPeaks = windowPeaks(band, hz: hz, winS: anchorWindowS)
-        let seed = globalSeed(anchorPeaks)
-        let anchor = anchorTrack(anchorPeaks, times: times, hz: hz, winS: anchorWindowS, seed: seed)
+        let seed = globalSeed(anchors)
+        let anchor = anchorTrack(anchors, seed: seed)
         guard anchor.count >= 1 else { return Track(points: []) }
         if anchor.count == 1 { return Track(points: anchor) }  // nothing to interpolate against
 
@@ -80,26 +124,20 @@ enum Heartbeat {
 
         // PASS 2 — infill from short windows, gated by agreement with the interpolated anchor.
         var infill: [Point] = []
-        let n = Int(infillWindowS * hz)
-        if n >= 4 && band.count >= n {
-            var start = 0
-            while start + n <= band.count {
-                let minute = times[start + n / 2]
-                let expected = interp(minute, xs: amins, ys: arates)
-                var best: Point?
-                for (b, c) in allPeaks(Array(band[start..<start + n]), hz: hz) where c >= trustBar {
-                    for cand in [b, b / 2.0, b * 2.0] {  // allow snapping an octave to meet the anchor
-                        if cand >= minBPM && cand <= maxBPM && abs(cand - expected) <= infillTolBPM {
-                            if best == nil || c > best!.confidence {
-                                best = Point(minute: minute, bpm: cand, confidence: c)
-                            }
-                            break
+        for seg in infills {
+            let expected = interp(seg.minute, xs: amins, ys: arates)
+            var best: Point?
+            for (b, c) in seg.peaks where c >= trustBar {
+                for cand in [b, b / 2.0, b * 2.0] {  // allow snapping an octave to meet the anchor
+                    if cand >= minBPM && cand <= maxBPM && abs(cand - expected) <= infillTolBPM {
+                        if best == nil || c > best!.confidence {
+                            best = Point(minute: seg.minute, bpm: cand, confidence: c)
                         }
+                        break
                     }
                 }
-                if let b = best { infill.append(b) }
-                start += n
             }
+            if let b = best { infill.append(b) }
         }
 
         // Merge anchor + infill; drop infill points near-coincident with an anchor minute; sort by time.
@@ -114,36 +152,14 @@ enum Heartbeat {
         return Track(points: merged)
     }
 
-    // MARK: - Per-window peaks (shared by seed + anchor)
-
-    /// One anchor window's autocorrelation result: its start sample index and its peaks (bpm, corr).
-    /// Precomputed once so `globalSeed` and `anchorTrack` don't each re-autocorrelate the same windows.
-    private struct WindowPeaks { let start: Int; let peaks: [(Double, Double)] }
-
-    private static func windowPeaks(_ band: [Double], hz: Double, winS: Double) -> [WindowPeaks] {
-        let n = Int(winS * hz)
-        guard n >= 4, band.count >= n else { return [] }
-        var out: [WindowPeaks] = []
-        var start = 0
-        while start + n <= band.count {
-            out.append(WindowPeaks(start: start, peaks: allPeaks(Array(band[start..<start + n]), hz: hz)))
-            start += n
-        }
-        return out
-    }
-
     // MARK: - Slew-limited anchor track
 
-    private static func anchorTrack(_ windows: [WindowPeaks], times: [Double], hz: Double,
-                                    winS: Double, seed: Double?) -> [Point] {
-        let n = Int(winS * hz)
-        guard n >= 4 else { return [] }
+    private static func anchorTrack(_ windows: [Segment], seed: Double?) -> [Point] {
         var out: [Point] = []
         var cur = seed
         var lastMin: Double?
         for win in windows {
-            let start = win.start
-            let minute = times[start + n / 2]
+            let minute = win.minute
             let cands = win.peaks.filter { $0.1 >= trustBar && $0.0 >= minBPM && $0.0 <= maxBPM }
             guard !cands.isEmpty else { continue }
 
@@ -183,8 +199,8 @@ enum Heartbeat {
     }
 
     /// Robust starting HR: the median of each long window's best fundamental across the whole night.
-    /// Reads the precomputed per-window peaks (same windows the anchor track uses).
-    private static func globalSeed(_ windows: [WindowPeaks]) -> Double? {
+    /// Reads the precomputed anchor segments (same windows the anchor track uses).
+    private static func globalSeed(_ windows: [Segment]) -> Double? {
         var fundamentals: [Double] = []
         for win in windows {
             let peaks = win.peaks.filter { $0.1 >= trustBar && $0.0 >= minBPM && $0.0 <= maxBPM }
@@ -309,5 +325,96 @@ enum Heartbeat {
         let x0 = xs[i], x1 = xs[i + 1], y0 = ys[i], y1 = ys[i + 1]
         let t = (x1 - x0) == 0 ? 0 : (x - x0) / (x1 - x0)
         return y0 + t * (y1 - y0)
+    }
+}
+
+// MARK: - Stored segments
+
+extension Heartbeat {
+    /// Segments as Float32 rows of (kind, start, minute, bpm, corr), one row per peak. A segment
+    /// with no peaks needs no row: the tracker skips it either way. Float32 holds a start index
+    /// exactly up to 16.7M samples, 145 hours at 32 Hz.
+    static func encode(_ segments: [Segment]) -> Data {
+        var rows: [Float32] = []
+        for s in segments {
+            for (b, c) in s.peaks {
+                rows += [Float32(s.kind.rawValue), Float32(s.start), Float32(s.minute), Float32(b), Float32(c)]
+            }
+        }
+        return rows.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    static func decode(_ data: Data) -> [Segment] {
+        let f = data.withUnsafeBytes { Array($0.bindMemory(to: Float32.self)) }
+        var bySegment: [Int: (Segment.Kind, Int, Double, [(Double, Double)])] = [:]
+        for i in stride(from: 0, to: f.count - 4, by: 5) {
+            guard let kind = Segment.Kind(rawValue: Int(f[i])) else { continue }
+            let start = Int(f[i + 1])
+            let key = start * 2 + kind.rawValue
+            if bySegment[key] == nil { bySegment[key] = (kind, start, Double(f[i + 2]), []) }
+            bySegment[key]!.3.append((Double(f[i + 3]), Double(f[i + 4])))
+        }
+        return bySegment.values.map { kind, start, minute, peaks in
+            Segment(kind: kind, start: start, minute: minute, peaks: peaks.sorted { $0.1 > $1.1 })
+        }
+    }
+}
+
+/// Makes heart segments as the night records, one 120 s block at a time, so stopping only has to
+/// run the cheap tracker. Each block is band-passed with `padSeconds` of envelope either side;
+/// on ten real nights that gave exactly the whole-night track (5 s was already enough).
+struct HeartbeatLive {
+    static let padSeconds = 30.0
+    private let hz = SomnyaConfig.accelEnvelopeHz
+    private var anchorN: Int { Int(Heartbeat.anchorWindowS * hz) }
+    private var pad: Int { Int(Self.padSeconds * hz) }
+
+    /// Envelope samples from whole-night index `base` on, with each one's window minute.
+    private var stream: [Double] = []
+    private var times: [Double] = []
+    private var base = 0
+    /// Whole-night index where the next unprocessed anchor block starts.
+    private var next = 0
+
+    /// Add one window's envelope; returns the segments of any block that now has its padding.
+    mutating func append(_ envelope: [Double], minute: Double) -> [Heartbeat.Segment] {
+        stream += envelope
+        times += Array(repeating: minute, count: envelope.count)
+        var out: [Heartbeat.Segment] = []
+        while next + anchorN + pad <= base + stream.count {
+            out += process(start: next, end: next + anchorN + pad)
+            next += anchorN
+        }
+        // Keep only what the next block's left padding needs.
+        let keepFrom = max(base, next - pad)
+        if keepFrom > base {
+            stream.removeFirst(keepFrom - base)
+            times.removeFirst(keepFrom - base)
+            base = keepFrom
+        }
+        return out
+    }
+
+    /// The rest at the end of the night: full anchor blocks, then infill windows in the tail.
+    mutating func finish() -> [Heartbeat.Segment] {
+        let end = base + stream.count
+        var out: [Heartbeat.Segment] = []
+        while next < end {
+            out += process(start: next, end: end)
+            next += anchorN
+        }
+        return out
+    }
+
+    /// Band-pass [start − pad, end) and cut segments from [start, end − its right padding).
+    private func process(start: Int, end: Int) -> [Heartbeat.Segment] {
+        let a = max(base, start - pad)
+        let slice = Array(stream[(a - base)..<(end - base)])
+        let band = Heartbeat.bandpassBPM(slice, hz: hz, lowBPM: Heartbeat.minBPM, highBPM: Heartbeat.maxBPM)
+        let blockEnd = min(end, start + anchorN) - a
+        let block = Array(band[(start - a)..<blockEnd])
+        let blockTimes = Array(times[(start - base)..<(blockEnd + a - base)])
+        // A tail shorter than an anchor window yields only its full infill windows, as in a whole-night run.
+        return Heartbeat.segments(block, times: blockTimes, hz: hz, from: start)
     }
 }

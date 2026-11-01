@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-11-01 14:10, at 0.4.
+Updated 2026-11-01 14:23, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -16,7 +16,10 @@ trusted.
   rhythm was clear. Says why when there's no trustworthy estimate.
 - **Heart rate over time**, from the accelerometer pulse
   (ballistocardiography), when the body was coupled well enough to the
-  mattress.
+  mattress. Since Nov 2026 the costly part runs during the night: each 120 s
+  block is band-passed and autocorrelated once the next window lands, and the
+  results are saved on the windows (`heartSegments`, ~10 KB a night). At stop
+  and on opening, only the cheap tracker runs over them.
 - **Raw data**: every 30-second window as a table, exportable as JSON.
 
 ## How to get to it
@@ -28,13 +31,19 @@ Main screen → History → a night → In-depth view. Raw Data is at the top of
 No check yet. The analysis is Swift with no test target; its reference is the
 Python prototype in `analysis/` and `analysis/STATS_SPEC.md`.
 
+Heart rate made during the night against a whole-night run: import real nights
+into the simulator (see `RealNightImport`), then launch with `-checkHeartLive`
+(`xcrun simctl launch --console-pty booted com.aurende.somnya -checkHeartLive`).
+It ends `HEARTLIVE done: N nights, 0 different`. On 1 Nov: 11 nights, 0 different.
+
 By hand only: open a recorded night.
 
 ## Gotchas
 
-- A night older than the last 30 has no raw streams, so its heart rate is
-  the track saved when it was last analysed: a heart-rate algorithm change
-  doesn't reach it, while fell-asleep, which reads only per-window numbers,
+- A night older than the last 30 has no raw streams. One recorded before
+  Nov 2026 keeps the heart-rate track saved when it was last analysed, so a
+  tracker change doesn't reach it; a later one keeps its segments and
+  recomputes. A change to the band-pass or the autocorrelation reaches neither, while fell-asleep, which reads only per-window numbers,
   still recomputes.
 
 - Breathing confidence doesn't show a person is there. On 31 Oct the phone
