@@ -72,8 +72,8 @@ final class SessionManager: ObservableObject {
     }
 
     /// A clean stop always sets `endTime`. So any session WITHOUT one at launch is a crash
-    /// leftover — it would otherwise show as "recording" forever and stack up. Close each at its
-    /// last window's time (best estimate of when capture died), or at its start if it has none.
+    /// leftover — it would otherwise show as "recording" forever and stack up. Close each at the end
+    /// of its last window (best estimate of when capture died), or at its start if it has none.
     private func recoverOrphanedSessions() {
         let descriptor = FetchDescriptor<SleepSession>(
             predicate: #Predicate { $0.endTime == nil }
@@ -81,7 +81,7 @@ final class SessionManager: ObservableObject {
         guard let orphans = try? context.fetch(descriptor), !orphans.isEmpty else { return }
         for s in orphans {
             let lastWindow = s.windows.map(\.startTime).max()
-            s.endTime = lastWindow ?? s.startTime
+            s.endTime = lastWindow?.addingTimeInterval(SomnyaConfig.windowSeconds) ?? s.startTime
             // Mark it so history can show this end time is an estimate, not a real wake.
             s.endReason = .recovered
         }
