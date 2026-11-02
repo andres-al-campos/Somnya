@@ -34,8 +34,11 @@ actor NightReporter {
     /// Recordings shorter than this are naps or false starts and would drag "usual" down.
     static let minNightMinutes = 3.0 * 60
 
-    /// The night itself, then up to `usualNights` earlier finished nights, newest first.
+    /// The night itself, then up to `usualNights` earlier finished nights, newest first. Earlier nights
+    /// whose results aren't saved yet are left out rather than worked out here: cleanup fills them in.
     func reports(for id: PersistentIdentifier) throws -> (night: NightReport, before: [NightReport])? {
+        let began = Date()
+        defer { SomnyaLog.lifecycle("Night report took \(Int(Date().timeIntervalSince(began) * 1000)) ms") }
         guard let session = modelContext.model(for: id) as? SleepSession else { return nil }
         let start = session.startTime
         var earlier = FetchDescriptor<SleepSession>(
@@ -44,43 +47,33 @@ actor NightReporter {
         earlier.fetchLimit = Self.usualNights * 3
         let before = try modelContext.fetch(earlier)
             .filter { $0.duration >= Self.minNightMinutes * 60 }
+            .compactMap { s in s.analysisCache.flatMap { $0.isComplete ? report(for: s, from: $0) : nil } }
             .prefix(Self.usualNights)
-            .map { report(for: $0, computeHeart: false) }
-        return (report(for: session, computeHeart: true), Array(before))
+
+        var cache = session.analysisCache
+        if cache?.isComplete != true {
+            cache = SessionAnalysisCache.refresh(session, in: modelContext)
+            try? modelContext.save()
+        }
+        return (report(for: session, from: cache!), Array(before))
     }
 
-    /// Onset and heart rate come from the session's cache when it's fresh. Heart rate is costly,
-    /// so only the night on screen recomputes it; earlier nights without a fresh cache go without.
-    private func report(for session: SleepSession, computeHeart: Bool) -> NightReport {
-        let windows = session.windows.sorted { $0.startTime < $1.startTime }
-        let fresh = session.analysisCache.flatMap { $0.isStale ? nil : $0 }
-        let onset = fresh?.onset ?? SleepOnset.analyze(windows)
-        var heart = fresh?.heartbeat
-        if heart == nil, computeHeart, windows.contains(where: { $0.hasRawStreams || $0.heartSegments != nil }) {
-            let track = Heartbeat.track(of: windows)
-            heart = track
-            if session.endTime != nil {
-                if let old = session.analysisCache { modelContext.delete(old) }
-                let cache = SessionAnalysisCache.from(heartbeat: track, onset: onset)
-                cache.session = session
-                session.analysisCache = cache
-                modelContext.insert(cache)
-                try? modelContext.save()
-            }
-        }
-
+    /// Reads only the saved results. Loading a night's windows brings its raw streams too, 25 MB a
+    /// night, and with eight nights that held this screen for seconds to read a few numbers.
+    private func report(for session: SleepSession, from cache: SessionAnalysisCache) -> NightReport {
         var settle: Double?, settleConf = 0.0
-        if case let .asleep(s, _, _, c) = onset { settle = s; settleConf = c }
+        if case let .asleep(s, _, _, c) = cache.onset { settle = s; settleConf = c }
+        let heart = cache.heartbeat
         return NightReport(
             id: session.persistentModelID,
             start: session.startTime,
             inBedMinutes: session.duration / 60,
             settleMinutes: settle,
             settleConfidence: settleConf,
-            wake: settle.flatMap { NightStats.wake(windows, settleMinutes: $0) },
-            longestStill: NightStats.longestStill(windows),
-            movements: NightStats.movements(windows),
-            heartBPM: heart?.medianBPM,
-            heartConfidence: heart?.meanConfidence)
+            wake: cache.wake,
+            longestStill: cache.longestStill,
+            movements: cache.movements,
+            heartBPM: heart.medianBPM,
+            heartConfidence: heart.meanConfidence)
     }
 }

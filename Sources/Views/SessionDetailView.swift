@@ -126,18 +126,18 @@ struct SessionDetailView: View {
             // 3. Persist for instant reopens — but only for FINISHED sessions. An active session will
             // gain more windows, which would silently invalidate a stored snapshot; recompute those.
             guard session.endTime != nil else { return }
-            persistAnalysis(heartbeat: heartbeat, onset: onset)
+            persistAnalysis(heartbeat: heartbeat, onset: onset, windows: snapshot)
         }
     }
 
     /// Store the computed analyses on the session so the next open is instant. Replaces any stale
     /// snapshot. Failures here are non-fatal — worst case we just recompute next time, so we log and
     /// move on rather than disturbing the view.
-    private func persistAnalysis(heartbeat: Heartbeat.Track, onset: SleepOnset.Result) {
+    private func persistAnalysis(heartbeat: Heartbeat.Track, onset: SleepOnset.Result, windows: [SensorWindow]) {
         if let old = session.analysisCache {
             modelContext.delete(old)  // cascade-owned; replace rather than mutate-in-place
         }
-        let cache = SessionAnalysisCache.from(heartbeat: heartbeat, onset: onset)
+        let cache = SessionAnalysisCache.from(heartbeat: heartbeat, onset: onset, windows: windows)
         cache.session = session
         session.analysisCache = cache
         modelContext.insert(cache)

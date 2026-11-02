@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-11-01 14:23, at 0.4.
+Updated 2026-11-02 11:00, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -57,11 +57,13 @@ By hand only: open a recorded night.
   windows at scattered rates (median 87, spread 36), with no heart rate in
   its stats, while the nights of 29–31 Oct found one in 13–18% at a steady
   53/min (spread about 6).
-- Breathing from motion hasn't been tested fairly yet. A breath tilts the
-  phone, which iOS counts as a change in gravity, and the accel and gyro
-  envelopes are magnitudes with gravity removed. Since Nov 2026 gravity is
-  stored at 5 Hz (`gravity_envelope` in exports); the test is a night plus
-  an empty-bed control, looking for a 0.2–0.5 Hz rhythm. The old gyro
+- Breathing didn't show in tilt. Since Nov 2026 gravity is stored at 5 Hz
+  (`gravity_envelope` in exports), on the idea that a breath tilts the phone.
+  On the 3.4-hour night of 2 Nov against a 40-minute empty bed, still stretches
+  gave 0.15–0.5 Hz tilt of 4.6 against 4.45 millidegrees, a ratio within 1.0–1.1
+  at every band, and no narrower peak than the empty bed. The accel and gyro
+  envelopes are magnitudes with gravity removed. One night, so it's a first
+  answer, and a weaker tilt could sit under this floor. The old gyro
   envelope showed 0.19–0.25 rhythm strength on nights against 0.16 on the
   empty bed, and fusing it with accel made heart rate worse on 5 nights, so
   it's no longer recorded densely.

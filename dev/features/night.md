@@ -1,6 +1,6 @@
 # A night
 
-Updated 2026-10-31 22:56, at 0.4.
+Updated 2026-11-02 11:00, at 0.4.
 
 How one night went, against what's usual for you, in the order it happened.
 
@@ -37,8 +37,11 @@ at launch, so the screen can be looked at with real nights.
 
 ## Gotchas
 
-- Earlier nights only have a heart rate once they've been opened (it's
-  computed and cached then), so heart rate often has no usual.
+- The screen reads each night's saved results and never its windows, which
+  carry the raw streams: loading them took 5.8 s for eight nights on a copy of
+  the phone's store, and fetching only some fields took 26 s. Results are saved
+  when a night ends and at launch (`RawRetention`). A night tapped before then
+  works out its own, and earlier nights without them stay out of "usual".
 - Woke up may land on the end of the recording (unchecked): on a night that ended at the
   pickup, the last movement is the pickup itself.
 - The line of nights keeps a minimum scale (twice the difference worth

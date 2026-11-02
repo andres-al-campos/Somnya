@@ -1,6 +1,6 @@
 # History
 
-Updated 2026-11-01 17:34, at 0.4.
+Updated 2026-11-02 11:00, at 0.4.
 
 Every recorded night, newest first, and a way to get them off the phone for
 analysis.
@@ -26,7 +26,8 @@ analysis.
   Nov 2026 on stores its accel envelope as raw Float32 bytes, 3.9 KB a window
   against 19 KB before, so a month of raw streams settles near 250 MB as older
   nights age out (estimated from window sizes, not yet measured on the phone). At each
-  launch and when a night ends, older nights drop them and keep their per-window
+  launch and when a night ends, every night's results are saved, and older
+  nights drop their streams and keep their per-window
   numbers and saved results, so every screen still shows them; only
   re-running breathing on them is lost, and heart rate on nights from before
   Nov 2026 (later ones keep their small heart segments). Skipped while a night

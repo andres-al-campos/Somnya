@@ -2,12 +2,13 @@ import Foundation
 import SwiftData
 import SQLite3
 
-/// Drops the raw sensor streams from nights older than the last `SomnyaConfig.rawRetentionNights`,
-/// so the store stops growing a night's worth of envelopes forever.
+/// Saves each finished night's results, so the Night screen never waits on them, and drops the raw
+/// sensor streams from nights older than the last `SomnyaConfig.rawRetentionNights`, so the store
+/// stops growing a night's worth of envelopes forever.
 ///
-/// Before a night loses its streams, its analysis snapshot is brought up to date while the streams
-/// are still there: the heart-rate track can't be recomputed afterwards. Runs on its own context off
-/// the main actor, since a backlog of old nights means a heartbeat analysis each.
+/// Results are saved first, while the streams are still there: the heart-rate track can't be
+/// recomputed afterwards. Runs on its own context off the main actor, since a backlog of old nights
+/// means a heartbeat analysis each.
 @ModelActor
 actor RawRetention {
     /// Prunes on a context of its own, off the main thread, and logs the outcome.
@@ -31,21 +32,18 @@ actor RawRetention {
 
         var pruned = 0
         let open = FetchDescriptor<SleepSession>(predicate: #Predicate { $0.endTime == nil })
-        for session in sessions.dropFirst(SomnyaConfig.rawRetentionNights) {
+        for (index, session) in sessions.enumerated() {
             // A backlog takes minutes (each night is a heartbeat analysis), so tracking can start
             // mid-run: stop between nights rather than compete with capture for the store and CPU.
             guard try modelContext.fetchCount(open) == 0 else { break }
-            let windows = session.windows.sorted { $0.startTime < $1.startTime }
+            if session.analysisCache?.isComplete != true {
+                _ = SessionAnalysisCache.refresh(session, in: modelContext)
+                try modelContext.save()
+            }
+            guard index >= SomnyaConfig.rawRetentionNights else { continue }
+            let windows = session.windows
             guard windows.contains(where: \.hasRawStreams) else { continue }
 
-            if session.analysisCache?.isStale ?? true {
-                if let old = session.analysisCache { modelContext.delete(old) }
-                let cache = SessionAnalysisCache.from(
-                    heartbeat: Heartbeat.track(of: windows), onset: SleepOnset.analyze(windows))
-                cache.session = session
-                session.analysisCache = cache
-                modelContext.insert(cache)
-            }
             for w in windows { w.dropRawStreams() }
             // Save per night, so a launch cut short keeps what it finished.
             try modelContext.save()
