@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-11-02 11:11, at 0.4.
+Updated 2026-11-02 14:45, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -41,7 +41,9 @@ overnight, with the screen locked.
   with nothing recording iOS suspends the app about half a minute later. 15
   nights ended that way, most at 7:35. The app now restarts the mic when the
   interruption ends and keeps trying meanwhile. Whether iOS allows that from
-  the background is not yet confirmed on the phone.
+  the background is not yet confirmed on the phone. The first version aborted
+  the app while retrying, so a tap now waits until the input can take one;
+  `tests/audio-tap-guarded.sh` holds every tap to that.
 
 ## How to get to it
 

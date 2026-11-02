@@ -53,6 +53,10 @@ final class CalibrationTester: ObservableObject {
         }
 
         let input = engine.inputNode
+        guard input.canTap else {
+            errorMessage = "The microphone isn't available right now. End any call or Siri request, then try again."
+            return
+        }
         let format = input.outputFormat(forBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let channel = buffer.floatChannelData?[0] else { return }

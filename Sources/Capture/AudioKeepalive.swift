@@ -27,6 +27,16 @@ enum AudioSessionConfig {
     }
 }
 
+extension AVAudioInputNode {
+    /// Whether a tap can go on now. `installTap` aborts the app on a bad format rather than returning
+    /// an error, and that's what the input reports while something else holds the mic.
+    var canTap: Bool {
+        let format = outputFormat(forBus: 0)
+        return format.sampleRate > 0 && format.channelCount > 0
+            && format.sampleRate == inputFormat(forBus: 0).sampleRate
+    }
+}
+
 /// Holds an audio session so the app keeps running when the phone locks. This is the only
 /// way iOS lets a sensor app persist with the screen off — the accelerometer rides along on
 /// the process this keeps alive. Records at a low sample rate (2 kHz target, per spec) since
@@ -94,6 +104,10 @@ final class AudioKeepalive {
 
     private func startEngine() -> Bool {
         let input = engine.inputNode
+        guard input.canTap else {
+            SomnyaLog.capture("Audio engine not started: the mic has no usable format yet, usually because a call or Siri holds it. A restart retries while the app is awake; if tracking has stopped, open Somnya and start again.")
+            return false
+        }
         let format = input.outputFormat(forBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self else { return }
