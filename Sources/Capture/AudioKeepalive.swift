@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 
 /// The capture session's category options, in one place because
 /// CalibrationTester must mirror them exactly — a measured level only matches
@@ -51,6 +52,10 @@ final class AudioKeepalive {
     /// Heartbeat: number of audio buffers seen, so we can prove flow without flooding logs.
     private var bufferCount = 0
 
+    private var observers: [NSObjectProtocol] = []
+    private var retryTimer: Timer?
+    private var retryTask = UIBackgroundTaskIdentifier.invalid
+
     /// Start the audio session + engine. Returns false if it couldn't start (e.g. permission
     /// denied or activation failed) so the caller can reflect that honestly in guardrails.
     @discardableResult
@@ -74,11 +79,22 @@ final class AudioKeepalive {
             return false
         }
 
+        bufferCount = 0
+        analyzer.reset()
+        guard startEngine() else {
+            isActive = false
+            return false
+        }
+
+        isActive = true
+        observeInterruptions()
+        SomnyaLog.capture("Audio keepalive STARTED (hwRate=\(Int(engine.inputNode.outputFormat(forBus: 0).sampleRate))Hz, target=\(Int(targetSampleRate))Hz). App will stay alive with screen locked.")
+        return true
+    }
+
+    private func startEngine() -> Bool {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        bufferCount = 0
-
-        analyzer.reset()
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self else { return }
             self.analyzer.process(buffer)
@@ -100,17 +116,82 @@ final class AudioKeepalive {
             SomnyaLog.capture("Audio engine start FAILED: \(error.localizedDescription).")
             input.removeTap(onBus: 0)
             installed = false
-            isActive = false
             return false
         }
-
-        isActive = true
-        SomnyaLog.capture("Audio keepalive STARTED (hwRate=\(Int(format.sampleRate))Hz, target=\(Int(targetSampleRate))Hz). App will stay alive with screen locked.")
         return true
+    }
+
+    // MARK: - Interruptions
+
+    /// An alarm or call stops the engine, and with nothing recording iOS suspends the app about half
+    /// a minute later. Nights ended that way at the alarm, 7:35 again and again, until this restarted
+    /// it. iOS doesn't promise an "ended" notice to a background app, so it keeps trying as well,
+    /// for as long as a background task holds the app awake.
+    private func observeInterruptions() {
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+        observers = [
+            center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+                guard let self, let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return }
+                SomnyaLog.capture("Audio interrupted, type \(raw) (1 began, 0 ended)")
+                if AVAudioSession.InterruptionType(rawValue: raw) == .began {
+                    self.keepTryingToRestart()
+                } else {
+                    self.restart()
+                }
+            },
+            center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+                SomnyaLog.capture("Audio route changed; restarting the engine")
+                self?.keepTryingToRestart()
+            },
+            center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
+                SomnyaLog.capture("Media services reset; restarting the engine")
+                self?.keepTryingToRestart()
+            },
+        ]
+    }
+
+    private func keepTryingToRestart() {
+        guard isActive, retryTimer == nil else { return }
+        retryTask = UIApplication.shared.beginBackgroundTask { [weak self] in self?.stopTrying() }
+        if restart() { return }
+        retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.restart() }
+    }
+
+    @discardableResult
+    private func restart() -> Bool {
+        guard isActive else { return false }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            return false
+        }
+        if !engine.isRunning {
+            if installed {
+                engine.inputNode.removeTap(onBus: 0)
+                installed = false
+            }
+            guard startEngine() else { return false }
+        }
+        SomnyaLog.capture("Audio keepalive restarted")
+        stopTrying()
+        return true
+    }
+
+    private func stopTrying() {
+        retryTimer?.invalidate()
+        retryTimer = nil
+        if retryTask != .invalid {
+            UIApplication.shared.endBackgroundTask(retryTask)
+            retryTask = .invalid
+        }
     }
 
     func stop() {
         guard isActive else { return }
+        stopTrying()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
         if installed {
             engine.inputNode.removeTap(onBus: 0)
             installed = false
