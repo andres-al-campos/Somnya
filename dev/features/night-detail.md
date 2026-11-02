@@ -1,6 +1,6 @@
 # A night's detail
 
-Updated 2026-11-02 11:00, at 0.4.
+Updated 2026-11-02 11:11, at 0.4.
 
 What Somnya measured about one night, each figure marked by how far it can be
 trusted.
@@ -63,7 +63,9 @@ By hand only: open a recorded night.
   gave 0.15–0.5 Hz tilt of 4.6 against 4.45 millidegrees, a ratio within 1.0–1.1
   at every band, and no narrower peak than the empty bed. The accel and gyro
   envelopes are magnitudes with gravity removed. One night, so it's a first
-  answer, and a weaker tilt could sit under this floor. The old gyro
+  answer, and a weaker tilt could sit under this floor. Signed acceleration
+  along gravity is recorded next (`vertical_accel`, 5 Hz, Nov 2026) to test the
+  same thing. The old gyro
   envelope showed 0.19–0.25 rhythm strength on nights against 0.16 on the
   empty bed, and fusing it with accel made heart rate worse on 5 nights, so
   it's no longer recorded densely.

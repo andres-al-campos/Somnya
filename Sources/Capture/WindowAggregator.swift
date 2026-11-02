@@ -23,6 +23,7 @@ final class WindowAggregator {
     private var rawAccelMags: [Double] = []
     private var rawGyroMags: [Double] = []
     private var rawGravity: [(x: Double, y: Double, z: Double)] = []
+    private var rawVertical: [Double] = []
 
     /// Heart segments made block by block as windows land; see `HeartbeatLive`.
     private var heart = HeartbeatLive()
@@ -66,10 +67,11 @@ final class WindowAggregator {
     /// the current window and are downsampled to the envelope rate at flush. The 10 Hz `ingest`
     /// path still owns window timing/flushing — this only accrues the dense samples in between.
     func ingestRawMagnitude(accelMag: Double, gyroMag: Double,
-                            gravity: (x: Double, y: Double, z: Double)) {
+                            gravity: (x: Double, y: Double, z: Double), vertical: Double) {
         rawAccelMags.append(accelMag)
         rawGyroMags.append(gyroMag)
         rawGravity.append(gravity)
+        rawVertical.append(vertical)
     }
 
     /// Finalize whatever's buffered (called on session stop so the last partial window isn't lost).
@@ -95,17 +97,20 @@ final class WindowAggregator {
 
     private func flush(at start: Date, partial: Bool = false) {
         guard let session, !buffer.isEmpty else {
-            buffer.removeAll(); rawAccelMags.removeAll(); rawGyroMags.removeAll(); rawGravity.removeAll()
+            buffer.removeAll(); rawAccelMags.removeAll(); rawGyroMags.removeAll(); rawGravity.removeAll(); rawVertical.removeAll()
             windowStart = nil; return
         }
         let samples = buffer
         let rawAccel = rawAccelMags
         let rawGyro = rawGyroMags
         let rawGrav = rawGravity
+        let vertical = rawVertical.isEmpty ? nil : Data(float32s: Self.downsample(
+            rawVertical, fromHz: SomnyaConfig.captureHz, toHz: SomnyaConfig.gravityEnvelopeHz).map { Float32($0) })
         buffer.removeAll()
         rawAccelMags.removeAll()
         rawGyroMags.removeAll()
         rawGravity.removeAll()
+        rawVertical.removeAll()
         windowStart = nil
 
         let features = Self.computeFeatures(samples, rawAccelMags: rawAccel, rawGyroMags: rawGyro,
@@ -157,6 +162,7 @@ final class WindowAggregator {
             audioEnvelopeFiltered: audio?.filteredEnvelope,
             melBandEnergies: audio?.melBands
         )
+        window.verticalAccel = vertical
         window.session = session
         let first = firstWindowStart ?? start
         firstWindowStart = first

@@ -1,5 +1,6 @@
-"""Auto-stop on pickup: end the night when the phone is picked up after sleep, usually to stop the
-alarm. The reference for the app's `PickupDetector`; change the two together.
+"""Auto-stop on pickup: end the night when the phone is picked up after sleep and doesn't go back to
+rest with someone beside it. `night_end` is the reference for the app's `PickupDetector`; change the
+two together.
 
 A pickup ends the night without judging whether it was the real morning one: anything recorded
 after the alarm isn't wanted. With the shipped settings (armed 120 min, off 1 min, share 1.0) it
@@ -42,8 +43,45 @@ def off_surface(df: pd.DataFrame) -> np.ndarray:
     return ~((dgrav < SURFACE_DGRAV) & (gyro < SURFACE_GYRO))
 
 
+def night_end(df: pd.DataFrame, *, armed_min=120.0, off_min=1.0, settle_min=5.0, wait_min=15.0, rest_min=120.0,
+              moved_bar=0.6) -> float | None:
+    """Where the app's PickupDetector ends the night: a pickup stands only if the phone doesn't
+    settle again within `wait_min`, or settles and then feels no movement for `rest_min`. None if it
+    never decides, which includes every night slept on after a pickup."""
+    off = off_surface(df)
+    mins = df["minutes"].to_numpy(dtype=float)
+    act = df["accel_activity_count"].to_numpy(dtype=float)
+    w = float(df["window_seconds"].iloc[0]) / 60.0 if "window_seconds" in df.columns else 0.5
+    span = max(1, int(round(off_min / w)))
+    on_total = still = 0.0
+    run: list[float] = []
+    pickup = settled = last_move = None
+    for i in range(len(df)):
+        if off[i]:
+            run.append(mins[i]); still = 0.0
+        else:
+            on_total += w; still += w; run = []
+        if on_total < armed_min:
+            continue
+        if len(run) >= span and (pickup is None or settled is not None):
+            pickup, settled, last_move = run[0], None, None
+        if pickup is None:
+            continue
+        if settled is None:
+            if still >= settle_min:
+                settled = mins[i]
+            elif mins[i] - pickup >= wait_min:
+                return float(pickup)
+            continue
+        if not off[i] and act[i] >= moved_bar:
+            last_move = mins[i] + w
+        if mins[i] - (last_move if last_move is not None else settled) >= rest_min:
+            return float(last_move if last_move is not None else pickup)
+    return None
+
+
 def auto_stop(df: pd.DataFrame, *, armed_min=120.0, off_min=1.0, share=1.0) -> float | None:
-    """Minutes into the session where auto-stop would end it, or None if it never fires."""
+    """The earlier rule, kept for the sweep below: minutes where the first pickup would end it."""
     off = off_surface(df)
     mins = df["minutes"].to_numpy(dtype=float)
     w = float(df["window_seconds"].iloc[0]) / 60.0 if "window_seconds" in df.columns else 0.5

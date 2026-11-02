@@ -197,6 +197,9 @@ final class SensorWindow {
     /// tilt through the window, for breathing from mattress motion. Raw bytes rather than [Double],
     /// which the store archives at ~2.5× the size.
     var gravityEnvelope: Data?
+    /// User acceleration along gravity at `SomnyaConfig.gravityEnvelopeHz`, signed (g), as Float32:
+    /// the mattress rising and falling, recorded to test for breathing since tilt showed none.
+    var verticalAccel: Data?
     /// Heart-band segments made while recording (`Heartbeat.encode`), so the night's heart rate is
     /// one cheap pass at stop. Not a raw stream: a few hundred bytes, kept after pruning, and enough
     /// to recompute the track forever. nil on nights recorded before Nov 2026.
@@ -297,7 +300,7 @@ final class SensorWindow {
 extension SensorWindow {
     /// Whether this window still holds the raw streams `RawRetention` drops.
     var hasRawStreams: Bool {
-        accelEnvelope != nil || accelEnvelopePacked != nil || gyroEnvelope != nil || gravityEnvelope != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
+        accelEnvelope != nil || accelEnvelopePacked != nil || gyroEnvelope != nil || gravityEnvelope != nil || verticalAccel != nil || audioEnvelope != nil || audioEnvelopeFiltered != nil
     }
 
     func dropRawStreams() {
@@ -305,6 +308,7 @@ extension SensorWindow {
         accelEnvelopePacked = nil
         gyroEnvelope = nil
         gravityEnvelope = nil
+        verticalAccel = nil
         audioEnvelope = nil
         audioEnvelopeFiltered = nil
     }

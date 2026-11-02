@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-11-01 14:07, at 0.4.
+Updated 2026-11-02 11:11, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -22,20 +22,26 @@ overnight, with the screen locked.
 - **Short recordings**: a night of 30 minutes or less asks whether to save or
   discard it.
 - **Auto-stop on pickup**: once the phone has lain on the bed for 2 hours,
-  picking it up for a minute (two windows off the bed in a row) ends the
-  night at the pickup. It doesn't judge whether the pickup was the morning
-  one: nothing after the alarm is wanted, so a pickup in the night ends it
-  too. Why: going back to sleep after the alarm does happen, but telling
-  that apart from a phone left on an empty bed is a false-positive judgement
-  not worth making (owner, 29 Oct). The recordings agree: after 10 of the 100
-  pickups the phone lay still on the bed for 30+ min, and neither breathing
-  confidence nor loudness differs from the sleep before it. A control on
-  31 Oct (phone alone on the bed for 44 min, owner at the desk) confirmed it:
-  the empty bed's breathing confidence matched three real nights', so the
-  signals can't tell an occupied bed from an empty one. `analysis/somnya_analyze/autostop.py` is the reference and the sweep
-  that chose the settings: 100 of 134 nights ended this way, 8 of them more
-  than 15 minutes before the estimated wake.
-- Starting while History or Debug is open goes back to the main screen.
+  picking it up for a minute (two windows off the bed in a row) marks a
+  possible end, and recording carries on. If it doesn't settle for 5 minutes
+  within the next 15, the night ends at the pickup. If it settles, the night
+  goes on, and ends at the last movement after 2 hours with none, or at the
+  pickup if nothing moved at all. Anything recorded after that end is deleted.
+  Stop with no movement since a pickup also ends the night at the pickup.
+  Why: turning off the alarm and going back to sleep is a normal morning, and
+  the owner wants it recorded (2 Nov, reversing 29 Oct). The occupied and empty
+  bed still can't be told apart by breathing or loudness (control on 31 Oct),
+  so it goes by movement, which only needs judging afterwards.
+  `night_end` in `analysis/somnya_analyze/autostop.py` is the reference: on 138
+  nights of 3 hours or more, ends more than 15 min before the estimated wake
+  went from 8 to 2. The 5 minutes are the owner's; 15 minutes and 2 hours are
+  guesses from a dozen mornings with up to 62 min between movements.
+  `tests/pickup-detector.sh` checks the morning cases.
+- **An alarm doesn't end capture**: an alarm or call stops the microphone, and
+  with nothing recording iOS suspends the app about half a minute later. 15
+  nights ended that way, most at 7:35. The app now restarts the mic when the
+  interruption ends and keeps trying meanwhile. Whether iOS allows that from
+  the background is not yet confirmed on the phone.
 
 ## How to get to it
 

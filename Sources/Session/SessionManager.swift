@@ -21,6 +21,7 @@ final class SessionManager: ObservableObject {
     private let motion = MotionCapture()
     private let audio = AudioKeepalive()
     private var aggregator: WindowAggregator?
+    private var pickup = PickupDetector()
     /// Kept alive for the process lifetime so the Shortcuts stop signal stays observed.
     private var stopSignalToken: Int32?
 
@@ -156,16 +157,16 @@ final class SessionManager: ObservableObject {
         agg.barometerProvider = { [weak self] in
             (self?.motion.latestPressureKPa, self?.motion.latestRelativeAltitudeM)
         }
-        var pickup = PickupDetector()
+        pickup = PickupDetector()
         agg.onWindow = { [weak self] window in
-            guard let self, let pickedUp = pickup.observe(window) else { return }
+            guard let self, let nightEnd = self.pickup.observe(.init(window)) else { return }
             // Defer: this runs inside the aggregator's flush, which stopping would tear down.
             Task { @MainActor in
                 guard self.currentSession === session else { return }
                 self.aggregator?.closeHeartbeat()
                 self.aggregator = nil
-                self.finish(session, endTime: pickedUp, endReason: .pickup,
-                            reason: "phone picked up after sleep")
+                self.finish(session, endTime: nightEnd, endReason: .pickup,
+                            reason: "phone picked up and didn't go back to sleep")
             }
         }
         aggregator = agg
@@ -181,10 +182,10 @@ final class SessionManager: ObservableObject {
         }
         // Dense 50 Hz magnitude stream → the BCG/breathing envelope. Hop to main for the same
         // SwiftData-actor reasons; this only appends to in-memory buffers (cheap at 50 Hz).
-        motion.onRawMagnitude = { [weak self] _, accelMag, gyroMag, gravity in
+        motion.onRawMagnitude = { [weak self] _, accelMag, gyroMag, gravity, vertical in
             Task { @MainActor in
                 guard let self, self.currentSession != nil else { return }
-                agg.ingestRawMagnitude(accelMag: accelMag, gyroMag: gyroMag, gravity: gravity)
+                agg.ingestRawMagnitude(accelMag: accelMag, gyroMag: gyroMag, gravity: gravity, vertical: vertical)
             }
         }
         // Start the audio keepalive so the app survives the screen locking. Only attempt it
@@ -219,7 +220,7 @@ final class SessionManager: ObservableObject {
         // Flush the last partial window before finishing.
         aggregator?.finalize()
         aggregator = nil
-        finish(session, endTime: Date(), endReason: endReason, reason: reason)
+        finish(session, endTime: pickup.restingEnd ?? Date(), endReason: endReason, reason: reason)
     }
 
     private func finish(_ session: SleepSession, endTime: Date, endReason: EndReason, reason: String) {
@@ -231,6 +232,7 @@ final class SessionManager: ObservableObject {
 
         session.endTime = endTime
         session.endReason = endReason
+        deleteWindows(of: session, after: endTime)
         do {
             try context.save()
             SomnyaLog.persist("SleepSession finalized endTime=\(session.endTime!)")
@@ -243,6 +245,15 @@ final class SessionManager: ObservableObject {
         lastFinishedSession = session  // surfaced so the UI can offer discard if it's too short
         currentSession = nil
         Task { await cleanUpOldNights() }
+    }
+
+    /// What was recorded while waiting to see if a pickup was the end. Fetched rather than read from
+    /// `session.windows`, which would load the whole night's streams on the main thread.
+    private func deleteWindows(of session: SleepSession, after end: Date) {
+        let id = session.persistentModelID
+        let tail = FetchDescriptor<SensorWindow>(
+            predicate: #Predicate { $0.startTime >= end && $0.session?.persistentModelID == id })
+        (try? context.fetch(tail))?.forEach(context.delete)
     }
 
     /// Discard a just-finished session the user chose not to keep (e.g. a too-short recording).
@@ -260,4 +271,14 @@ final class SessionManager: ObservableObject {
 
     /// Keep a just-finished session (clear the pending save/discard prompt).
     func keepFinishedSession() { lastFinishedSession = nil }
+}
+
+extension PickupDetector.Reading {
+    init(_ w: SensorWindow) {
+        var gravity: (x: Double, y: Double, z: Double)?
+        if let x = w.gravityX, let y = w.gravityY, let z = w.gravityZ { gravity = (x, y, z) }
+        self.init(start: w.startTime, seconds: w.windowSeconds, gravity: gravity,
+                  gyro: w.gyroMean ?? w.gyroEnvelope.flatMap { $0.isEmpty ? nil : $0.reduce(0, +) / Double($0.count) } ?? 0,
+                  activity: w.accelActivityCount)
+    }
 }

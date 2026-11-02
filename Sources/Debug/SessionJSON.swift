@@ -63,6 +63,7 @@ enum SessionJSON {
         if let v = w.gyroMean { dict["gyro_mean"] = v }
         let gravity = w.gravitySamples
         if !gravity.isEmpty { dict["gravity_envelope"] = gravity.map { [$0.x, $0.y, $0.z] } }
+        if let vertical = w.verticalAccel { dict["vertical_accel"] = vertical.float32s.map { Double($0) } }
         // Posture (mean gravity vector) + ambient pressure.
         if let v = w.gravityX { dict["gravity_x"] = v }
         if let v = w.gravityY { dict["gravity_y"] = v }

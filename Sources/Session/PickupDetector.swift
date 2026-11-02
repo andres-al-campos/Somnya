@@ -1,13 +1,22 @@
 import Foundation
 
-/// Ends the night when the phone is picked up after sleep, usually to stop the alarm. A port of
-/// `auto_stop` in `analysis/somnya_analyze/autostop.py`; change the two together.
+/// Ends the night when the phone is picked up after sleep and doesn't come back to rest with
+/// someone beside it. A port of `auto_stop` in `analysis/somnya_analyze/autostop.py`; change the two
+/// together.
 ///
-/// It doesn't try to tell a morning pickup from one in the night: a pickup ends the night either
-/// way. On 134 nights (Jun–Oct 2026) the chosen settings ended 100, and 8 of those more than 15
-/// minutes before the estimated wake — which also counts nights of dozing off again after the
-/// alarm, so the true mid-night share is lower.
+/// A pickup only marks a possible end, since turning off the alarm and going back to sleep is a
+/// normal morning. Recording carries on, and the pickup stands if the phone never settles again, or
+/// settles and then feels no movement for as long as it would on a table. On 142 nights (Jun-Nov
+/// 2026) a phone set back down on the bed nearly always settled within minutes.
 struct PickupDetector {
+    struct Reading {
+        let start: Date
+        let seconds: Double
+        let gravity: (x: Double, y: Double, z: Double)?
+        let gyro: Double
+        let activity: Double
+    }
+
     /// Gravity moved or the gyro was busy: the same bars as `classify_phone_state`.
     static let gravityBar = 0.015
     static let gyroBar = 0.015
@@ -18,31 +27,68 @@ struct PickupDetector {
     /// shifting the phone; two in a row (a minute) was the sweep's balance: one window ended
     /// 124 nights with 13 early, three ended 19.
     static let offWindows = 2
+    /// Still for this long after a pickup means it's back at rest and the night may go on.
+    static let settleSeconds: Double = 5 * 60
+    /// In hand or on the move this long after a pickup: the night is over.
+    static let settleWaitSeconds: Double = 15 * 60
+    /// No movement for this long after settling means nobody's there. Back-to-sleep mornings went up
+    /// to 62 min between movements. Too long only records a little extra, which is then trimmed.
+    static let restSeconds: Double = 120 * 60
 
     private var lastGravity: (Double, Double, Double)?
     private var onBedSeconds: Double = 0
+    private var stillSeconds: Double = 0
     private var offRun: [Date] = []
+    private var pickup: Date?
+    private var settled: Date?
+    private var lastMovementEnd: Date?
 
-    /// Feed each saved window in order. Returns when the phone was picked up (the first window of
-    /// the off-the-bed run) once that run is long enough, or nil.
-    mutating func observe(_ w: SensorWindow) -> Date? {
-        guard let gx = w.gravityX, let gy = w.gravityY, let gz = w.gravityZ else { return nil }
+    /// Where the night should end if it's stopped now, when that's earlier than now: the pickup, if
+    /// nothing has moved since.
+    var restingEnd: Date? { lastMovementEnd == nil ? pickup : nil }
+
+    /// Feed each saved window in order. Returns when the night ended, once that's decided, or nil.
+    mutating func observe(_ r: Reading) -> Date? {
+        guard let g = r.gravity else { return nil }
         var dGravity = 0.0
         if let (px, py, pz) = lastGravity {
-            dGravity = sqrt((gx - px) * (gx - px) + (gy - py) * (gy - py) + (gz - pz) * (gz - pz))
+            dGravity = sqrt((g.x - px) * (g.x - px) + (g.y - py) * (g.y - py) + (g.z - pz) * (g.z - pz))
         }
-        lastGravity = (gx, gy, gz)
-        let gyro = w.gyroMean
-            ?? w.gyroEnvelope.flatMap { $0.isEmpty ? nil : $0.reduce(0, +) / Double($0.count) } ?? 0
-        let off = !(dGravity < Self.gravityBar && gyro < Self.gyroBar)
+        lastGravity = (g.x, g.y, g.z)
+        let off = !(dGravity < Self.gravityBar && r.gyro < Self.gyroBar)
 
-        guard off else {
-            onBedSeconds += w.windowSeconds
+        if off {
+            offRun.append(r.start)
+            stillSeconds = 0
+        } else {
+            onBedSeconds += r.seconds
+            stillSeconds += r.seconds
             offRun.removeAll()
+        }
+        guard onBedSeconds >= Self.armedSeconds else { return nil }
+
+        // A pickup, or another one after settling.
+        if offRun.count >= Self.offWindows, pickup == nil || settled != nil {
+            pickup = offRun.first
+            settled = nil
+            lastMovementEnd = nil
+        }
+        guard let pickup else { return nil }
+
+        guard let settledAt = settled else {
+            if stillSeconds >= Self.settleSeconds {
+                settled = r.start
+            } else if r.start.timeIntervalSince(pickup) >= Self.settleWaitSeconds {
+                return pickup
+            }
             return nil
         }
-        offRun.append(w.startTime)
-        guard onBedSeconds >= Self.armedSeconds, offRun.count >= Self.offWindows else { return nil }
-        return offRun.first
+        if !off, r.activity >= SomnyaConfig.movementThreshold {
+            lastMovementEnd = r.start.addingTimeInterval(r.seconds)
+        }
+        if r.start.timeIntervalSince(lastMovementEnd ?? settledAt) >= Self.restSeconds {
+            return lastMovementEnd ?? pickup
+        }
+        return nil
     }
 }
