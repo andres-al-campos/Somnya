@@ -1,6 +1,6 @@
 # Tracking a night
 
-Updated 2026-11-02 14:45, at 0.4.
+Updated 2026-11-03 18:22, at 0.4.
 
 Start tracking at bedtime with the phone on the mattress, and stop it in the
 morning. Somnya records movement, breathing and heartbeat in 30-second windows
@@ -44,6 +44,10 @@ overnight, with the screen locked.
   the background is not yet confirmed on the phone. The first version aborted
   the app while retrying, so a tap now waits until the input can take one;
   `tests/audio-tap-guarded.sh` holds every tap to that.
+
+- **Start and Stop don't hold the screen**: the live session keeps its own list
+  of saved windows, so nothing on the way to Stop reads the night from the store.
+  `tests/session-manager-no-store-reads.sh` holds that.
 
 ## How to get to it
 

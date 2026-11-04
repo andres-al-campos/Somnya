@@ -22,6 +22,9 @@ final class SessionManager: ObservableObject {
     private let audio = AudioKeepalive()
     private var aggregator: WindowAggregator?
     private var pickup = PickupDetector()
+    /// What the live session has saved. Asking the store instead held the main thread at Stop: 6.3 s
+    /// on the phone with a 1 GB store, to find nothing.
+    private var savedWindows: [(start: Date, id: PersistentIdentifier)] = []
     /// Kept alive for the process lifetime so the Shortcuts stop signal stays observed.
     private var stopSignalToken: Int32?
 
@@ -44,7 +47,7 @@ final class SessionManager: ObservableObject {
     @discardableResult
     func closeIfCaptureStopped(now: Date = Date()) -> Bool {
         guard let session = currentSession else { return false }
-        let lastWindow = session.windows.map(\.startTime).max() ?? session.startTime
+        let lastWindow = savedWindows.last?.start ?? session.startTime
         guard now.timeIntervalSince(lastWindow) > SomnyaConfig.captureStoppedSeconds else { return false }
         // Drop the partial window instead of flushing it: it holds only what arrived after the
         // app woke, which would land hours past the real end.
@@ -145,6 +148,7 @@ final class SessionManager: ObservableObject {
 
         currentSession = session
         windowCount = 0
+        savedWindows = []
         SomnyaLog.lifecycle("Session STARTED method=\(method.rawValue) at \(session.startTime)")
 
         // Wire up capture: aggregator persists windows; motion feeds it decimated samples.
@@ -158,6 +162,11 @@ final class SessionManager: ObservableObject {
             (self?.motion.latestPressureKPa, self?.motion.latestRelativeAltitudeM)
         }
         pickup = PickupDetector()
+        agg.onSaved = { [weak self] window in
+            guard let self else { return }
+            self.savedWindows.append((window.startTime, window.persistentModelID))
+            self.windowCount = self.savedWindows.count
+        }
         agg.onWindow = { [weak self] window in
             guard let self, let nightEnd = self.pickup.observe(.init(window)) else { return }
             // Defer: this runs inside the aggregator's flush, which stopping would tear down.
@@ -174,10 +183,7 @@ final class SessionManager: ObservableObject {
             // MotionCapture delivers off the main thread; hop back for SwiftData + UI.
             Task { @MainActor in
                 guard let self, self.currentSession != nil else { return }
-                let before = (self.currentSession?.windows.count ?? 0)
                 agg.ingest(sample)
-                let after = (self.currentSession?.windows.count ?? 0)
-                if after != before { self.windowCount = after }
             }
         }
         // Dense 50 Hz magnitude stream → the BCG/breathing envelope. Hop to main for the same
@@ -232,7 +238,7 @@ final class SessionManager: ObservableObject {
 
         session.endTime = endTime
         session.endReason = endReason
-        deleteWindows(of: session, after: endTime)
+        deleteWindows(after: endTime)
         do {
             try context.save()
             SomnyaLog.persist("SleepSession finalized endTime=\(session.endTime!)")
@@ -247,13 +253,11 @@ final class SessionManager: ObservableObject {
         Task { await cleanUpOldNights() }
     }
 
-    /// What was recorded while waiting to see if a pickup was the end. Fetched rather than read from
-    /// `session.windows`, which would load the whole night's streams on the main thread.
-    private func deleteWindows(of session: SleepSession, after end: Date) {
-        let id = session.persistentModelID
-        let tail = FetchDescriptor<SensorWindow>(
-            predicate: #Predicate { $0.startTime >= end && $0.session?.persistentModelID == id })
-        (try? context.fetch(tail))?.forEach(context.delete)
+    /// What was recorded while waiting to see if a pickup was the end.
+    private func deleteWindows(after end: Date) {
+        for window in savedWindows where window.start >= end {
+            if let model = context.model(for: window.id) as? SensorWindow { context.delete(model) }
+        }
     }
 
     /// Discard a just-finished session the user chose not to keep (e.g. a too-short recording).

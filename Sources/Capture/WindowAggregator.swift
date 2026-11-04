@@ -47,6 +47,8 @@ final class WindowAggregator {
 
     /// Called with each window once it's saved (not the partial one flushed at stop).
     var onWindow: ((SensorWindow) -> Void)?
+    /// Every saved window, the partial last one too.
+    var onSaved: ((SensorWindow) -> Void)?
 
     init(context: ModelContext, session: SleepSession) {
         self.context = context
@@ -195,6 +197,7 @@ final class WindowAggregator {
         } catch {
             SomnyaLog.persist("FAILED to save SensorWindow: \(error)")
         }
+        onSaved?(window)
         if !partial { onWindow?(window) }
     }
 
