@@ -245,10 +245,11 @@ if [ "$INSTALL" = "1" ]; then
     installed=0
     install_log=$(mktemp)
     for attempt in 1 2 3; do
-        # PIPESTATUS, not the pipeline's status: `cmd | tee` returns tee's exit
-        # code, which is always 0 and would make every failure look like success.
-        xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH" 2>&1 | tee "$install_log"
-        if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+        # In the `if` condition because `set -e` would otherwise end the script on
+        # the first failed install, skipping the retries and the error messages
+        # below; ReSign then showed devicectl's bare "error 3002" line. pipefail
+        # makes the condition devicectl's status rather than tee's.
+        if xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH" 2>&1 | tee "$install_log"; then
             installed=1
             break
         fi
@@ -264,17 +265,19 @@ if [ "$INSTALL" = "1" ]; then
             echo "       $OUT_DIR/$APP_NAME.app if you would rather install it from Xcode."
             exit 1
         fi
-        echo "  install attempt $attempt failed (transient device-link error); retrying..."
-        sleep 2
+        if [ "$attempt" -lt 3 ]; then
+            echo "  install attempt $attempt failed (transient device-link error); retrying..."
+            sleep 2
+        fi
     done
     rm -f "$install_log"
     if [ "$installed" = "1" ]; then
         echo "✓ $APP_NAME installed. Launch it from your home screen."
     else
-        echo "error: install failed after 3 attempts. If devicectl's output above does not"
-        echo "       say why, wake the phone and check it is on the same network as this"
-        echo "       Mac — a sleeping phone paired over Wi-Fi is the usual cause. Then"
-        echo "       re-run ./build.sh. The signed .app is at"
+        # The fix comes first: ReSign's notification shows only the first lines.
+        echo "error: couldn't install to the iPhone (tried 3 times). Unlock it and keep it"
+        echo "       awake, on the same Wi-Fi as this Mac or plugged in, then run ./build.sh"
+        echo "       again. devicectl's own error is above; the signed .app is at"
         echo "       $OUT_DIR/$APP_NAME.app if you would rather install it from Xcode."
         exit 1
     fi
