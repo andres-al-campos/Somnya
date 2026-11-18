@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: build.sh matches walled_garden/_template/ios-build.sh, which it's generated from.
+# Lint: build.sh matches walled_garden/_template/ios-build.sh, which it's generated from.
 #
 # A fix made here and never copied up is lost at the next sync, and the other apps never
 # get it. Editing this copy first is fine; this fails until the template has it too.

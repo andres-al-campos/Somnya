@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: nothing puts a tap on the mic without first checking the input can take one.
+# Lint: nothing puts a tap on the mic without first checking the input can take one.
 #
 # The mic restart aborted the app 51 s into a session on 2 Nov, retrying while the mic was unavailable.
 

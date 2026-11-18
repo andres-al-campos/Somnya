@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: a @ModelActor is created inside Task.detached, never straight from a view.
+# Lint: a @ModelActor is created inside Task.detached, never straight from a view.
 #
 # A model actor runs its work on the thread that created it, so one made from SwiftUI (the main
 # actor) did all its fetching and analysis on the main thread. Pruning old nights that way left

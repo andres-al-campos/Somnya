@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: starting, recording and stopping never read the night from the store on the main thread.
+# Lint: starting, recording and stopping never read the night from the store on the main thread.
 #
 # Stop froze the app for up to 6.3 s on the phone, in a search that found nothing, and reading the
 # session's windows relationship loads a night's raw streams. Crash recovery at launch is the exception.

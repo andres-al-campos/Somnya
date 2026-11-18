@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: a pickup ends the night only if the phone doesn't go back to rest with someone beside it.
+# Test: a pickup ends the night only if the phone doesn't go back to rest with someone beside it.
 #
 # Turning off the alarm and going back to sleep is a normal morning, and a pickup used to end the
 # night on the spot. Each scenario below is a morning, 30 s a window, and the time the night should end.

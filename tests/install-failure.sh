@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: a failed device install reaches build.sh's own retries and error message.
+# Test: a failed device install reaches build.sh's own retries and error message.
 #
 # Runs build.sh's install step against a devicectl that always fails. ReSign shows the
 # script's last error line in its notification, so if the script dies on devicectl's

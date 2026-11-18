@@ -17,8 +17,8 @@
 #   ./build.sh --no-install    # build + sign only, stage into ./build/Somnya.app
 #   ./build.sh -n              # short form of --no-install
 #   ./build.sh --device <id>   # target a specific device (else first available)
-#   ./build.sh check           # run the laws in tests/ (no build)
-#   ./build.sh check --drives  # the laws, then every drive in tests/drive/
+#   ./build.sh check           # run the checks in tests/ (no build)
+#   ./build.sh check --drives  # the checks, then every drive in tests/drive/
 #   ./build.sh drive [name]    # run every feature check in tests/drive/, or one
 #   ./build.sh -v              # verbose xcodebuild output
 #   ./build.sh -h              # show this help
@@ -64,8 +64,8 @@ Usage:
   ./build.sh --no-install    build + sign only, stage into ./build/$APP_NAME.app
   ./build.sh -n              short form of --no-install
   ./build.sh --device <id>   target a specific device (else first available)
-  ./build.sh check           run the laws in tests/ (no build)
-  ./build.sh check --drives  the laws, then every drive in tests/drive/
+  ./build.sh check           run the checks in tests/ (no build)
+  ./build.sh check --drives  the checks, then every drive in tests/drive/
   ./build.sh drive [name]    run every feature check in tests/drive/, or one
   ./build.sh -v              verbose xcodebuild output
   ./build.sh -h              show this help
@@ -112,9 +112,9 @@ fi
 
 if [ "$MODE" = "check" ]; then
     failed=0
-    for law in tests/*.sh; do
-        [ -f "$law" ] || continue
-        "$law" || failed=1
+    for check in tests/*.sh; do
+        [ -f "$check" ] || continue
+        "$check" || failed=1
     done
     if [ "$DRIVES" = 1 ]; then
         drive "" || failed=1

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Law: the Night screen's report reads saved results, never a night's windows.
+# Lint: the Night screen's report reads saved results, never a night's windows.
 #
 # A window's row carries its raw streams, so reading windows for a few numbers loaded 25 MB a night
 # and held the screen for seconds. Fetching only some fields made it worse (26 s against 5.8 s on a
